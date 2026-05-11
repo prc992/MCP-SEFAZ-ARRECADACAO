@@ -172,6 +172,24 @@ def playground():
                 border-radius: 10px;
                 display: none;
             }
+
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 8px;
+            }
+
+            th, td {
+                border: 1px solid #e5e7eb;
+                padding: 8px 10px;
+                text-align: left;
+            }
+
+            th {
+                background: #f3f4f6;
+                font-weight: bold;
+            }            
+
         </style>
     </head>
     <body>
@@ -187,14 +205,37 @@ def playground():
 
             <div class="examples">
                 <div class="muted">Exemplos clicáveis:</div>
-                <span class="example-chip" onclick="usarExemplo('quero um gráfico de valor arrecadado por município')">
-                    valor arrecadado por município
+
+                <span class="example-chip" onclick="usarExemplo('qual o valor arrecadado por segmento no mês de abril de 2026?')">
+                    valor por segmento em abril/2026
                 </span>
-                <span class="example-chip" onclick="usarExemplo('quero um gráfico de documentos por mês em Fortaleza')">
-                    documentos por mês em Fortaleza
+
+                <span class="example-chip" onclick="usarExemplo('quero comparar valor arrecadado por segmento entre abril de 2025 e abril de 2026')">
+                    abril/2025 vs abril/2026
                 </span>
-                <span class="example-chip" onclick="usarExemplo('quero um gráfico de barra de valor arrecadado por município top 1')">
-                    barra top 1 por município
+
+                <span class="example-chip" onclick="usarExemplo('quero comparar valor arrecadado apenas do segmento ATACADISTA entre abril de 2025 e abril de 2026')">
+                    comparar segmento ATACADISTA
+                </span>
+
+                <span class="example-chip" onclick="usarExemplo('quero ver a arrecadação nos últimos 12 meses para o subgrupo ICMS')">
+                    últimos 12 meses ICMS
+                </span>
+
+                <span class="example-chip" onclick="usarExemplo('quero a quantidade de DAE pagos por grupo de receita no mês de abril de 2026')">
+                    DAE por grupo de receita
+                </span>
+
+                <span class="example-chip" onclick="usarExemplo('mostre valor arrecadado por receita no mês de abril de 2026')">
+                    valor por receita
+                </span>
+
+                <span class="example-chip" onclick="usarExemplo('mostre valor arrecadado por data de pagamento no mês de abril de 2026')">
+                    série diária abril/2026
+                </span>
+
+                <span class="example-chip" onclick="usarExemplo('compare o valor arrecadado do subgrupo ICMS entre abril e maio de 2026')">
+                    ICMS abril vs maio
                 </span>
             </div>
 
@@ -222,6 +263,11 @@ def playground():
                     <div class="label">Dados brutos</div>
                     <pre id="rawData"></pre>
                 </div>
+
+                <div class="section">
+                    <div class="label">Tabela</div>
+                    <div id="tableContainer"></div>
+                </div>                
 
                 <div class="section">
                     <div class="label">Gráfico</div>
@@ -253,6 +299,45 @@ def playground():
 
             function esconderLoading() {
                 document.getElementById("loading").style.display = "none";
+            }
+
+            function renderizarTabela(dados) {
+                const container = document.getElementById("tableContainer");
+
+                if (!dados || dados.length === 0) {
+                    container.innerHTML = "<p>Nenhum dado encontrado.</p>";
+                    return;
+                }
+
+                const colunas = Object.keys(dados[0]);
+
+                let html = "<table>";
+                html += "<thead><tr>";
+
+                colunas.forEach(coluna => {
+                    html += `<th>${coluna}</th>`;
+                });
+
+                html += "</tr></thead>";
+                html += "<tbody>";
+
+                dados.forEach(row => {
+                    html += "<tr>";
+                    colunas.forEach(coluna => {
+                        let valor = row[coluna];
+
+                        if (typeof valor === "number") {
+                            valor = valor.toLocaleString("pt-BR");
+                        }
+
+                        html += `<td>${valor}</td>`;
+                    });
+                    html += "</tr>";
+                });
+
+                html += "</tbody></table>";
+
+                container.innerHTML = html;
             }
 
             async function enviarPergunta() {
@@ -293,6 +378,8 @@ def playground():
                     document.getElementById("summaryText").textContent = data.summary || "Sem resumo disponível.";
                     document.getElementById("rawData").textContent = JSON.stringify(data.dados_brutos || [], null, 2);
 
+                    renderizarTabela(data.dados_brutos || []);
+                    
                     Plotly.newPlot(
                         "chart",
                         data.plotly_json.data || [],
