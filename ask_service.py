@@ -4,67 +4,76 @@ from schemas import QuerySpec
 def interpretar_pergunta(question: str) -> QuerySpec:
     texto = question.lower()
 
-    metric = None
-    if "documento" in texto or "documentos" in texto:
+    if "documento" in texto or "dae" in texto or "quantidade" in texto:
         metric = "qtd_documentos"
-    elif "arrecad" in texto or "valor" in texto:
+    else:
         metric = "valor_arrecadado"
 
-    group_by = None
-    if "município" in texto or "municipio" in texto:
-        group_by = "municipio"
-    elif "mês" in texto or "mes" in texto:
-        group_by = "mes"
-
-    chart_type = "line"
-    if "barra" in texto or "bar" in texto:
+    if "data" in texto or "dia" in texto or "pagamento" in texto or "tempo" in texto:
+        group_by = "data_pagamento"
+        chart_type = "line"
+        top_n = None
+    elif "receita" in texto:
+        group_by = "receita"
         chart_type = "bar"
+        top_n = 10
+    elif "código" in texto or "codigo" in texto:
+        group_by = "codigo_receita"
+        chart_type = "bar"
+        top_n = 10
+    elif "subgrupo" in texto:
+        group_by = "subgrupo"
+        chart_type = "bar"
+        top_n = 10
+    else:
+        group_by = "segmento"
+        chart_type = "bar"
+        top_n = 10
 
-    municipio = None
-    if "fortaleza" in texto:
-        municipio = "Fortaleza"
-    elif "caucaia" in texto:
-        municipio = "Caucaia"
-
-    top_n = None
-    if "top 1" in texto:
-        top_n = 1
-    elif "top 2" in texto:
-        top_n = 2
-    elif "top 3" in texto:
-        top_n = 3
-
-    if metric is None or group_by is None:
-        raise ValueError("Pergunta insuficiente para determinar métrica e agrupamento.")
+    segmento = None
+    subgrupo = None
+    receita = None
 
     return QuerySpec(
         metric=metric,
         group_by=group_by,
-        municipio=municipio,
         chart_type=chart_type,
-        top_n=top_n
+        top_n=top_n,
+        segmento=segmento,
+        subgrupo=subgrupo,
+        receita=receita
     )
+
 
 def gerar_summary(spec: QuerySpec) -> str:
     metric_label = {
         "valor_arrecadado": "valor arrecadado",
-        "qtd_documentos": "quantidade de documentos"
+        "qtd_documentos": "quantidade de DAE pagos"
     }
 
     group_by_label = {
-        "mes": "mês",
-        "municipio": "município"
+        "data_pagamento": "data de pagamento",
+        "receita": "receita",
+        "codigo_receita": "código da receita",
+        "subgrupo": "subgrupo da receita",
+        "segmento": "segmento"
     }
 
     partes = [
         f"Consulta interpretada como {metric_label[spec.metric]} por {group_by_label[spec.group_by]}"
     ]
 
-    if spec.municipio:
-        partes.append(f"filtrando o município {spec.municipio}")
+    if spec.segmento:
+        partes.append(f"filtrando o segmento {spec.segmento}")
+
+    if spec.subgrupo:
+        partes.append(f"filtrando o subgrupo {spec.subgrupo}")
+
+    if spec.receita:
+        partes.append(f"filtrando a receita {spec.receita}")
 
     if spec.top_n is not None:
-        partes.append(f"retornando apenas o top {spec.top_n}")
+        partes.append(f"retornando o top {spec.top_n}")
 
     partes.append(f"com gráfico do tipo {spec.chart_type}")
 

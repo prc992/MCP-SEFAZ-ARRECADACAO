@@ -1,48 +1,77 @@
 from schemas import QuerySpec
+from redshift_client import executar_sql
 
-dados_mock = [
-    {"mes": "2025-01", "municipio": "Fortaleza", "valor_arrecadado": 100, "qtd_documentos": 10},
-    {"mes": "2025-02", "municipio": "Fortaleza", "valor_arrecadado": 150, "qtd_documentos": 12},
-    {"mes": "2025-03", "municipio": "Fortaleza", "valor_arrecadado": 120, "qtd_documentos": 9},
-    {"mes": "2025-01", "municipio": "Caucaia", "valor_arrecadado": 80, "qtd_documentos": 8},
-    {"mes": "2025-02", "municipio": "Caucaia", "valor_arrecadado": 90, "qtd_documentos": 7},
-    {"mes": "2025-03", "municipio": "Caucaia", "valor_arrecadado": 110, "qtd_documentos": 11},
-]
+
+TABLE_NAME = "arrecadacao.f_arrecadacao_diaria_consolidada"
+
+
+METRIC_MAP = {
+    "valor_arrecadado": "SUM(vlr_arrecadado)",
+    "qtd_documentos": "SUM(qtd_dae_pag)"
+}
+
+
+GROUP_BY_MAP = {
+    "data_pagamento": "dat_pagamento",
+    "receita": "dsc_receita",
+    "codigo_receita": "cod_receita",
+    "subgrupo": "receita_class_subgrupo",
+    "segmento": "dsc_segmento"
+}
 
 
 def executar_query(spec: QuerySpec):
-    agregados = {}
+    metric_sql = METRIC_MAP[spec.metric]
+    group_sql = GROUP_BY_MAP[spec.group_by]
 
-    for row in dados_mock:
-        if spec.municipio and row["municipio"] != spec.municipio:
-            continue
+    where_clauses = []
 
-        if spec.start_mes and row["mes"] < spec.start_mes:
-            continue
-        if spec.end_mes and row["mes"] > spec.end_mes:
-            continue
+    if spec.start_date:
+        where_clauses.append(f"dat_pagamento >= '{spec.start_date}'")
 
-        chave = row[spec.group_by]
-        valor = row.get(spec.metric, 0)
+    if spec.end_date:
+        where_clauses.append(f"dat_pagamento <= '{spec.end_date}'")
 
-        if chave not in agregados:
-            agregados[chave] = 0
+    if spec.segmento:
+        where_clauses.append(f"LOWER(dsc_segmento) LIKE LOWER('%{spec.segmento}%')")
 
-        agregados[chave] += valor
+    if spec.subgrupo:
+        where_clauses.append(f"LOWER(receita_class_subgrupo) LIKE LOWER('%{spec.subgrupo}%')")
+
+    if spec.receita:
+        where_clauses.append(f"LOWER(dsc_receita) LIKE LOWER('%{spec.receita}%')")
+
+    where_sql = ""
+    if where_clauses:
+        where_sql = "WHERE " + " AND ".join(where_clauses)
+
+    order_direction = "DESC" if spec.order_desc else "ASC"
+
+    limit_sql = ""
+    if spec.top_n:
+        limit_sql = f"LIMIT {spec.top_n}"
+
+    sql = f"""
+    SELECT
+        {group_sql} AS categoria,
+        {metric_sql} AS valor
+    FROM {TABLE_NAME}
+    {where_sql}
+    GROUP BY 1
+    ORDER BY valor {order_direction}
+    {limit_sql}
+    """
+
+    dados = executar_sql(sql)
 
     resultado = []
-    for chave, soma in agregados.items():
+    for row in dados:
         resultado.append({
-            spec.group_by: chave,
-            spec.metric: soma
+            spec.group_by: row["categoria"],
+            spec.metric: float(row["valor"]) if row["valor"] is not None else 0
         })
 
-    resultado.sort(key=lambda row: row[spec.metric], reverse=spec.order_desc)
-
-    if spec.top_n is not None:
-        resultado = resultado[:spec.top_n]
-
-    if spec.group_by == "mes":
-        resultado.sort(key=lambda row: row["mes"])
+    if spec.group_by == "data_pagamento":
+        resultado.sort(key=lambda row: row[spec.group_by])
 
     return resultado
