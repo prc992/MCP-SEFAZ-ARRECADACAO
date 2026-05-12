@@ -67,7 +67,10 @@ def executar_serie_temporal(spec: QuerySpec):
             spec.metric: float(row["valor"]) if row["valor"] is not None else 0
         })
 
-    return resultado
+    return {
+    "dados": resultado,
+    "sql": sql
+}
 
 def executar_query(spec: QuerySpec):
     if spec.analysis_type == "compare_periods":
@@ -133,7 +136,10 @@ def executar_agregacao_simples(spec: QuerySpec):
     if spec.group_by == "data_pagamento":
         resultado.sort(key=lambda row: row[spec.group_by])
 
-    return resultado
+    return {
+    "dados": resultado,
+    "sql": sql
+}
 
 def executar_comparacao_periodos(spec: QuerySpec):
     metric_col = METRIC_MAP[spec.metric]
@@ -216,4 +222,7 @@ def executar_comparacao_periodos(spec: QuerySpec):
             "tendencia": tendencia
         })
 
-    return resultado
+    return {
+    "dados": resultado,
+    "sql": sql
+}

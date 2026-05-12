@@ -21,7 +21,10 @@ def metadata():
 
 @app.post("/grafico")
 def gerar_grafico(spec: QuerySpec):
-    dados = executar_query(spec)
+    query_result = executar_query(spec)
+    dados = query_result["dados"]
+    sql = query_result["sql"]
+
     fig = gerar_plotly_figure(dados, spec)
 
     return {
@@ -34,7 +37,10 @@ def gerar_grafico(spec: QuerySpec):
 
 @app.post("/grafico-html", response_class=HTMLResponse)
 def gerar_grafico_html(spec: QuerySpec):
-    dados = executar_query(spec)
+    query_result = executar_query(spec)
+    dados = query_result["dados"]
+    sql = query_result["sql"]
+
     fig = gerar_plotly_figure(dados, spec)
     return HTMLResponse(content=fig.to_html(full_html=True))
 
@@ -48,8 +54,11 @@ def ask(req: AskRequest):
             "question": req.question,
             "error": str(e)
         }
+   
+    query_result = executar_query(spec)
+    dados = query_result["dados"]
+    sql = query_result["sql"]
 
-    dados = executar_query(spec)
     fig = gerar_plotly_figure(dados, spec)
     summary = gerar_summary(spec)
 
@@ -57,6 +66,7 @@ def ask(req: AskRequest):
         "question": req.question,
         "query_interpretada": spec.model_dump(),
         "summary": summary,
+        "sql": sql,
         "title": f"{spec.metric} por {spec.group_by}",
         "chart_type": spec.chart_type,
         "dados_brutos": dados,
@@ -255,6 +265,11 @@ def playground():
                 </div>
 
                 <div class="section">
+                    <div class="label">SQL gerado</div>
+                    <pre id="sqlText"></pre>
+                </div>                
+
+                <div class="section">
                     <div class="label">Resumo textual</div>
                     <div id="summaryText"></div>
                 </div>
@@ -375,6 +390,7 @@ def playground():
                     document.getElementById("resultado").style.display = "block";
                     document.getElementById("questionText").textContent = data.question || "";
                     document.getElementById("interpretedQuery").textContent = JSON.stringify(data.query_interpretada, null, 2);
+                    document.getElementById("sqlText").textContent = data.sql || "SQL não disponível.";
                     document.getElementById("summaryText").textContent = data.summary || "Sem resumo disponível.";
                     document.getElementById("rawData").textContent = JSON.stringify(data.dados_brutos || [], null, 2);
 
