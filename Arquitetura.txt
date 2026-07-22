@@ -1,0 +1,27 @@
+Usuário digita pergunta
+        ↓
+/playground ou /ask
+        ↓
+ask_service.py interpreta a pergunta. Atualmente utiliza um parser baseado em regras simples, 
+mas futuramente essa etapa será realizada por uma LLM responsável por converter linguagem natural 
+em uma estrutura padronizada de consulta.
+        ↓
+schemas.py valida a estrutura QuerySpec, garantindo que a consulta interpretada siga um 
+contrato controlado de métricas, filtros, agrupamentos e tipos de visualização permitidos.
+        ↓
+query_engine.py transforma o QuerySpec em consultas controladas ao Redshift. 
+Atualmente o sistema não gera SQL livremente; as consultas são construídas a partir de modelos 
+pré-definidos e regras estruturadas em JSON, garantindo segurança, previsibilidade e 
+aderência às perguntas suportadas pela aplicação.
+        ↓
+Redshift executa a consulta sobre a view/base de arrecadação
+        ↓
+query_engine.py retorna os dados em estrutura tabular/JSON padronizada
+        ↓
+chart_engine.py transforma os dados retornados em estruturas de visualização gráfica. 
+Atualmente a implementação utiliza Plotly, mas a arquitetura foi desenhada para permitir futura 
+substituição ou integração com outros mecanismos de visualização.
+        ↓
+main.py consolida a resposta final da API, retornando interpretação da pergunta, resumo textual, 
+tabela, gráfico e estrutura JSON associada aos resultados.
+------
