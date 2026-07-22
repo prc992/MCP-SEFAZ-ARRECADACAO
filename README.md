@@ -7,3 +7,4 @@ Serviço para consulta e análise de dados de arrecadação utilizando modelos d
 | Nome | Função |
 |------|--------|
 | Paulo Cordeiro | Desenvolvimento |
+| Murilo Ybanez  | Desenvolvimento |
