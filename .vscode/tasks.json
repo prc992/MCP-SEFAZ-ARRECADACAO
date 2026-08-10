@@ -1,0 +1,22 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run FastAPI",
+			"type": "shell",
+			"command": "C:/Users/49757913/AppData/Local/anaconda3/envs/arrecadacao/python.exe",
+			"args": [
+				"-m",
+				"uvicorn",
+				"main:app",
+				"--reload"
+			],
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}

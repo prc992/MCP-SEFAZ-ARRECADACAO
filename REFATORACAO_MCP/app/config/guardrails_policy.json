@@ -1,0 +1,34 @@
+{
+  "domain": "Análises de arrecadação tributária",
+  "allowed_intents": [
+    "agregação por categoria",
+    "série temporal",
+    "comparação entre dois períodos"
+  ],
+  "allowed_metrics": [
+    "valor_arrecadado",
+    "qtd_documentos"
+  ],
+  "allowed_group_by": [
+    "data_pagamento",
+    "mes",
+    "receita",
+    "codigo_receita",
+    "subgrupo",
+    "segmento"
+  ],
+  "allowed_chart_types": [
+    "line",
+    "bar"
+  ],
+  "response_policy": {
+    "must_use_registered_tools": true,
+    "disallow_freeform_outside_scope": true
+  },
+  "guidance_message": "Pergunta fora do escopo suportado. Pergunte sobre arrecadação usando valor arrecadado ou quantidade de DAE, com filtros de período e agrupamentos por segmento, subgrupo, receita, código de receita, mês ou data de pagamento. Também são suportadas comparações entre períodos e séries temporais.",
+  "examples": [
+    "Qual o valor arrecadado por segmento no mês de abril de 2026?",
+    "Compare o valor arrecadado por subgrupo entre abril e maio de 2026.",
+    "Mostre a série mensal de quantidade de DAE pagos nos últimos 12 meses."
+  ]
+}
