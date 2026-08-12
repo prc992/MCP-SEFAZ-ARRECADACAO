@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 
-POLICY_PATH = Path(__file__).resolve().parents[3] / "config" / "guardrails_policy.json"
+POLICY_PATH = Path(__file__).resolve().parents[2] / "config" / "guardrails_policy.json"
 
 
 logger = logging.getLogger(__name__)

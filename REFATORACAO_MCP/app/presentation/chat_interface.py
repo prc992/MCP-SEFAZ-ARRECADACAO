@@ -3,7 +3,7 @@ import logging
 import plotly.graph_objects as go
 import streamlit as st
 
-from app.execution.mcp_client import ask_agent
+from app.execution.chat_agent import chat_agent
 from app.shared.logging_utils import log_exception_tree, preview_text, setup_console_logging
 
 
@@ -48,7 +48,7 @@ def main() -> None:
 
     st.title("Chat de Arrecadação com MCP")
     st.caption(
-        "As perguntas são convertidas em chamadas de ferramentas MCP (query_tool e chart_tool) com guardrails de escopo."
+        "As perguntas são convertidas pelo chat_agent em chamadas de query_tool e chart_tool via servidor MCP local."
     )
 
     if "messages" not in st.session_state:
@@ -77,21 +77,21 @@ def main() -> None:
                         for m in st.session_state.messages
                     ]
                     logger.info(
-                        "Chamando MCP: question=%s history_items=%s",
+                        "Chamando chat_agent: question=%s history_items=%s",
                         preview_text(question),
                         len(history_payload),
                     )
-                    result = ask_agent(question, history_payload)
+                    result = chat_agent(question, history_payload)
                     logger.info(
-                        "MCP respondeu: can_answer=%s keys=%s",
+                        "chat_agent respondeu: can_answer=%s keys=%s",
                         result.get("can_answer"),
                         sorted(result.keys()),
                     )
                 except Exception as exc:
-                    log_exception_tree(logger, exc, "Falha ao consultar o servidor MCP local")
+                    log_exception_tree(logger, exc, "Falha ao consultar o chat_agent")
                     result = {
                         "can_answer": False,
-                        "message": "Falha ao consultar o servidor MCP local.",
+                        "message": "Falha ao consultar o chat_agent.",
                         "guidance": str(exc),
                     }
 

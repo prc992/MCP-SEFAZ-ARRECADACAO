@@ -1,5 +1,5 @@
-import logging
 import json
+import logging
 import os
 from datetime import date
 from typing import cast
@@ -9,8 +9,8 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
-from app.execution.tools.agent_tool.dtos import AgentPlan, TemporalContext, ToolCall
-from app.execution.tools.agent_tool.guardrail_policy import get_guidance_message, guardrails_policy_for_prompt
+from app.execution.chat_agent.dtos import AgentPlan, TemporalContext, ToolCall
+from app.execution.chat_agent.guardrail_policy import get_guidance_message, guardrails_policy_for_prompt
 from app.execution.tools.tool_registry import get_planner_catalog
 from app.shared.contracts import QuerySpec
 from app.shared.logging_utils import exception_chain_text, log_exception_tree, preview_text

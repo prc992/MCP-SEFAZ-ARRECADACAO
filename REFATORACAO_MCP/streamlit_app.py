@@ -1,4 +1,4 @@
-from app.presentation.streamlit_app import main
+from app.presentation.chat_interface import main
 
 
 if __name__ == "__main__":

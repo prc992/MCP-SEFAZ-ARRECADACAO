@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from app.execution.tools.chart_tool import build_chart
+from app.execution.tools.query_tool import run_query
+from app.shared.contracts import QuerySpec
+
 
 McpToolHandler = Callable[..., dict[str, Any]]
 
@@ -30,21 +34,11 @@ class ToolDefinition:
 
 
 def _execute_query_tool(spec: dict[str, Any]) -> dict[str, Any]:
-    from app.execution.tools.agent_tool.agent_tool import execute_query_tool
-
-    return execute_query_tool(spec)
+    return run_query(QuerySpec(**spec))
 
 
 def _execute_chart_tool(data: list[dict[str, Any]], spec: dict[str, Any]) -> dict[str, Any]:
-    from app.execution.tools.agent_tool.agent_tool import execute_chart_tool
-
-    return execute_chart_tool(data, spec)
-
-
-def _run_agent(question: str, history: list[dict[str, str]] | None = None) -> dict[str, Any]:
-    from app.execution.tools.agent_tool.agent_tool import run_agent
-
-    return run_agent(question=question, history=history)
+    return build_chart(data, QuerySpec(**spec))
 
 
 AVAILABLE_TOOLS: tuple[ToolDefinition, ...] = (
@@ -73,20 +67,6 @@ AVAILABLE_TOOLS: tuple[ToolDefinition, ...] = (
             "required": ["data", "spec"],
         },
         consumes_previous_result=True,
-    ),
-    ToolDefinition(
-        name="agent_tool",
-        description="Recebe pergunta do usuário, aplica guardrails, planeja tool_calls e orquestra a resposta.",
-        handler=_run_agent,
-        input_schema={
-            "type": "object",
-            "properties": {
-                "question": {"type": "string"},
-                "history": {"type": "array"},
-            },
-            "required": ["question"],
-        },
-        planner_visible=False,
     ),
 )
 

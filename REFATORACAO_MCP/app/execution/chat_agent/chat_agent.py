@@ -1,12 +1,11 @@
 import logging
 from typing import Any
 
-from app.execution.tools.agent_tool.dtos import AgentResponse, ToolCall
-from app.execution.tools.agent_tool.guardrail_policy import get_guidance_message
-from app.execution.tools.agent_tool.llm_planner import plan_question
-from app.execution.tools.agent_tool.summary_builder import summarize_spec
-from app.execution.tools.chart_tool import build_chart
-from app.execution.tools.query_tool import run_query
+from app.execution.chat_agent.dtos import AgentResponse, ToolCall
+from app.execution.chat_agent.guardrail_policy import get_guidance_message
+from app.execution.chat_agent.llm_planner import plan_question
+from app.execution.chat_agent.summary_builder import summarize_spec
+from app.execution.mcp_stdio_helper import call_mcp_tool
 from app.execution.tools.tool_registry import get_planner_catalog, get_tool_names
 from app.shared.contracts import QuerySpec
 from app.shared.logging_utils import log_exception_tree, preview_text
@@ -21,32 +20,6 @@ FALLBACK_USER_MESSAGE = (
     "'mostre a arrecadação por receita em junho de 2026' ou "
     "'faça uma série temporal do valor arrecadado nos últimos 6 meses'."
 )
-
-
-def execute_query_tool(spec_payload: dict[str, Any]) -> dict[str, Any]:
-    logger.info("Executando query_tool com spec=%s", spec_payload)
-    spec = QuerySpec(**spec_payload)
-    result = run_query(spec)
-    logger.info("query_tool concluiu com %s linhas", len(result.get("data", [])))
-    return result
-
-
-def execute_chart_tool(
-    data: list[dict[str, Any]],
-    spec_payload: dict[str, Any],
-    fallback_spec: QuerySpec | None = None,
-) -> dict[str, Any]:
-    logger.info("Executando chart_tool com data_rows=%s", len(data))
-    try:
-        spec = QuerySpec(**spec_payload)
-    except Exception:
-        if fallback_spec is None:
-            raise
-        logger.warning("chart_tool recebeu spec inválido; reutilizando QuerySpec planejado")
-        spec = fallback_spec
-    result = build_chart(data, spec)
-    logger.info("chart_tool concluiu")
-    return result
 
 
 TOOL_EXECUTOR_NAMES = get_tool_names()
@@ -66,7 +39,7 @@ def _execute_tool_call(
         spec_payload = tool_call.arguments.get("spec")
         if not isinstance(spec_payload, dict):
             raise RuntimeError("query_tool requer arguments.spec como objeto")
-        return execute_query_tool(spec_payload)
+        return call_mcp_tool("query_tool", {"spec": spec_payload})
 
     if tool_call.tool_name == "chart_tool":
         spec_payload = tool_call.arguments.get("spec")
@@ -85,16 +58,22 @@ def _execute_tool_call(
         if not isinstance(data_payload, list):
             raise RuntimeError("chart_tool requer arguments.data como lista")
 
-        return execute_chart_tool(data_payload, spec_payload, fallback_spec=fallback_spec)
+        if fallback_spec is not None:
+            try:
+                QuerySpec(**spec_payload)
+            except Exception:
+                spec_payload = fallback_spec.model_dump()
+
+        return call_mcp_tool("chart_tool", {"data": data_payload, "spec": spec_payload})
 
     raise RuntimeError(f"Tool não suportada: {tool_call.tool_name}")
 
 
-def run_agent(
+def chat_agent(
     question: str,
     history: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    logger.info("run_agent iniciado question=%s history_items=%s", preview_text(question), len(history or []))
+    logger.info("chat_agent iniciado question=%s history_items=%s", preview_text(question), len(history or []))
     available_tools = get_planner_catalog()
     plan = plan_question(question, history=history, available_tools=available_tools)
     logger.info(
@@ -176,5 +155,8 @@ def run_agent(
         data=data,
         chart_json=chart_json,
     )
-    logger.info("run_agent finalizado can_answer=True rows=%s", len(data))
+    logger.info("chat_agent finalizado can_answer=True rows=%s", len(data))
     return response.model_dump()
+
+
+run_agent = chat_agent

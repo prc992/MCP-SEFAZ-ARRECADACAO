@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP("sefaz-arrecadacao-agent")
 
 setup_console_logging()
-logger.info("Registrando tools MCP")
+logger.info("Registrando tools MCP de execução")
 
 for tool in AVAILABLE_TOOLS:
     logger.debug("Registrando tool MCP: %s", tool.name)

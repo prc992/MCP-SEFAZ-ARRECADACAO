@@ -1,44 +1,43 @@
-# Arquitetura proposta (Agent + MCP)
+# Arquitetura proposta (agente de chat + MCP)
 
 ## Organização por pastas
 
-- `app/presentation/`: interface Streamlit e componentes de apresentação.
-- `app/execution/tools/agent_tool/`: orquestração do agente, planner LLM, guardrails, catálogo de tools e resumo textual.
-- `app/execution/tools/agent_tool/dtos.py`: DTOs internos da orquestração, como `AgentPlan`, `AgentResponse` e `ToolCall`.
+- `app/presentation/chat_interface.py`: interface Streamlit e componentes de apresentação.
+- `app/execution/chat_agent/`: orquestração do agente, planejador LLM, regras de segurança, contratos e resumo textual.
 - `app/execution/`: ferramentas de consulta e visualização.
 - `app/infrastructure/`: acesso à base e catálogos auxiliares.
-- `app/shared/`: contracts compartilhados e contratos de dados como `QuerySpec`.
-- `app/config/`: políticas e configurações externas, como guardrails.
-- `streamlit_app.py`: launcher raiz para iniciar a interface sem expor a estrutura interna.
+- `app/shared/`: contratos compartilhados e dados como `QuerySpec`.
+- `app/config/`: políticas e configurações externas, como regras de segurança.
+- `streamlit_app.py`: inicializador da interface na raiz, sem expor a estrutura interna.
 
 ## Fluxo
 
-1. Usuario envia pergunta no chat Streamlit.
-2. Cliente MCP local chama a tool `agent_tool` no servidor MCP.
-3. `agent_tool` usa guardrails externos carregados de `app/config/guardrails_policy.json` e consulta o catálogo de tools registradas no servidor.
-4. LLM Planner gera um plano estruturado de `tool_calls` com base no catálogo registrado.
-5. Orquestrador executa as tools em sequência, resolvendo dependências simples como o `chart_tool` consumir os dados retornados pela `query_tool`.
-6. `summary_builder` gera o resumo textual a partir do `QuerySpec` derivado do plano.
-8. Resposta estruturada retorna para a UI com:
+1. Usuário envia pergunta no chat Streamlit.
+2. A interface chama diretamente o agente de chat.
+3. O agente usa regras externas carregadas do arquivo de segurança e consulta o catálogo de ferramentas registradas no servidor.
+4. O planejador LLM gera um plano estruturado de chamadas de ferramenta com base no catálogo registrado.
+5. O agente usa o ajudante MCP local para chamar a ferramenta de consulta e a ferramenta de gráfico no servidor MCP.
+6. O resumo textual é gerado a partir da estrutura derivada do plano.
+7. A resposta estruturada retorna para a interface com:
    - mensagem final
-   - QuerySpec
+   - estrutura da consulta
    - SQL
    - dados
    - grafico
 
 ## Guardrails
 
-- Perguntas fora de dominio nao sao respondidas com texto livre.
+- Perguntas fora de domínio não são respondidas com texto livre.
 - O agente somente responde quando consegue mapear para ferramentas registradas e a sequência planejada é suficiente para executar a resposta.
-- Politica de escopo e orientacao ficam em arquivo externo para facilitar manutencao.
+- As regras de escopo e orientação ficam em arquivo externo para facilitar manutenção.
 
-## Independencia da implementacao atual
+## Independência da implementação atual
 
-- Todo codigo operacional da nova arquitetura foi criado em `REFATORACAO_MCP`.
-- Nao depende de `main.py` nem de endpoints FastAPI existentes no projeto antigo.
-- Reaproveita apenas a logica funcional, replicada e adaptada para o novo contexto.
+- Todo o código operacional da nova arquitetura foi criado em `REFATORACAO_MCP`.
+- Não depende de `main.py` nem de endpoints FastAPI existentes no projeto antigo.
+- Reaproveita apenas a lógica funcional, replicada e adaptada para o novo contexto.
 
-## Observacao de implementacao
+## Observação de implementação
 
-- A orquestracao concreta hoje esta centralizada em `app/execution/tools/agent_tool/agent_tool.py`.
-- A tool publica exposta pelo servidor MCP e `agent_tool`; `query_tool` e `chart_tool` seguem como ferramentas de execucao e o agente valida se o conjunto registrado é suficiente antes de responder.
+- A orquestração concreta hoje está centralizada no agente de chat.
+- O servidor MCP publica apenas a ferramenta de consulta e a ferramenta de gráfico; o agente valida se o conjunto registrado é suficiente antes de responder.

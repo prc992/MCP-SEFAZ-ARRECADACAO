@@ -9,10 +9,11 @@ from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from app.shared.logging_utils import preview_text
 
 
 logger = logging.getLogger(__name__)
+
+"""Generic MCP stdio transport helper used by the chat_agent layer."""
 
 
 def _extract_tool_payload(result: Any) -> dict[str, Any]:
@@ -40,17 +41,17 @@ def _extract_tool_payload(result: Any) -> dict[str, Any]:
     raise RuntimeError("Não foi possível interpretar a resposta do servidor MCP")
 
 
-async def _call_agent_chat(question: str, history: list[dict[str, str]]) -> dict[str, Any]:
+async def _call_mcp_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     project_root = str(Path(__file__).resolve().parents[2])
     env = os.environ.copy()
     env.setdefault("PYTHONPATH", project_root)
 
     logger.info(
-        "Abrindo sessão MCP stdio: python=%s project_root=%s question=%s history_items=%s",
+        "Abrindo sessão MCP stdio: python=%s project_root=%s tool=%s args_keys=%s",
         sys.executable,
         project_root,
-        preview_text(question),
-        len(history),
+        tool_name,
+        sorted(arguments.keys()),
     )
 
     server_params = StdioServerParameters(
@@ -63,18 +64,12 @@ async def _call_agent_chat(question: str, history: list[dict[str, str]]) -> dict
         async with ClientSession(read_stream, write_stream) as session:
             logger.debug("Inicializando sessão MCP")
             await session.initialize()
-            logger.debug("Sessão MCP inicializada; chamando agent_tool")
-            result = await session.call_tool(
-                "agent_tool",
-                {
-                    "question": question,
-                    "history": history,
-                },
-            )
-            logger.info("agent_tool respondeu")
+            logger.debug("Sessão MCP inicializada; chamando %s", tool_name)
+            result = await session.call_tool(tool_name, arguments)
+            logger.info("%s respondeu", tool_name)
             return _extract_tool_payload(result)
 
 
-def ask_agent(question: str, history: list[dict[str, str]]) -> dict[str, Any]:
-    logger.info("ask_agent invocado")
-    return asyncio.run(_call_agent_chat(question, history))
+def call_mcp_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    logger.info("call_mcp_tool invocado tool=%s", tool_name)
+    return asyncio.run(_call_mcp_tool(tool_name, arguments))
