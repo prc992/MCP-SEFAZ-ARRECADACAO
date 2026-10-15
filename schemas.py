@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Literal
 
 
@@ -11,7 +11,8 @@ class QuerySpec(BaseModel):
         "receita",
         "codigo_receita",
         "subgrupo",
-        "segmento"
+        "segmento",
+        "decendio"
     ]
     chart_type: Literal["line", "bar"] = "bar"
     top_n: int | None = 20
@@ -34,6 +35,8 @@ class QuerySpec(BaseModel):
     segmento: str | None = None
     subgrupo: str | None = None
     receita: str | None = None
+
+    decendio: int | None = Field(default=None, ge=1, le=3)
 
 
 class AskRequest(BaseModel):

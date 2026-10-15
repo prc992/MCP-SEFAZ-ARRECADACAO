@@ -2,21 +2,24 @@ from schemas import QuerySpec
 from redshift_client import executar_sql
 
 
-TABLE_NAME = "arrecadacao.f_arrecadacao_diaria_consolidada"
+TABLE_NAME = """arrecadacao.f_arrecadacao_diaria_consolidada a
+INNER JOIN arrecadacao.decendios_regra dr
+    ON dr.dat_pagamento = a.dat_pagamento"""
 
 
 METRIC_MAP = {
-    "valor_arrecadado": "vlr_arrecadado",
-    "qtd_documentos": "qtd_dae_pag"
+    "valor_arrecadado": "a.vlr_arrecadado",
+    "qtd_documentos": "a.qtd_dae_pag"
 }
 
 GROUP_BY_MAP = {
-    "data_pagamento": "dat_pagamento",
-    "mes": "DATE_TRUNC('month', dat_pagamento)",
-    "receita": "dsc_receita",
-    "codigo_receita": "cod_receita",
-    "subgrupo": "receita_class_subgrupo",
-    "segmento": "dsc_segmento"
+    "data_pagamento": "a.dat_pagamento",
+    "mes": "DATE_TRUNC('month', a.dat_pagamento)",
+    "receita": "a.dsc_receita",
+    "codigo_receita": "a.cod_receita",
+    "subgrupo": "a.receita_class_subgrupo",
+    "segmento": "a.dsc_segmento",
+    "decendio": "dr.decendio"
 }
 
 def executar_serie_temporal(spec: QuerySpec):
@@ -26,23 +29,28 @@ def executar_serie_temporal(spec: QuerySpec):
 
     if spec.months_back:
         where_clauses.append(
-            f"dat_pagamento >= DATEADD(month, -{spec.months_back - 1}, DATE_TRUNC('month', CURRENT_DATE))"
+            f"a.dat_pagamento >= DATEADD(month, -{spec.months_back - 1}, DATE_TRUNC('month', CURRENT_DATE))"
         )
 
     if spec.start_date:
-        where_clauses.append(f"dat_pagamento >= '{spec.start_date}'")
+        where_clauses.append(f"a.dat_pagamento >= '{spec.start_date}'")
 
     if spec.end_date:
-        where_clauses.append(f"dat_pagamento <= '{spec.end_date}'")
+        where_clauses.append(f"a.dat_pagamento <= '{spec.end_date}'")
 
     if spec.segmento:
-        where_clauses.append(f"LOWER(dsc_segmento) LIKE LOWER('%{spec.segmento}%')")
+        where_clauses.append(f"LOWER(a.dsc_segmento) LIKE LOWER('%{spec.segmento}%')")
 
     if spec.subgrupo:
-        where_clauses.append(f"LOWER(receita_class_subgrupo) LIKE LOWER('%{spec.subgrupo}%')")
+        where_clauses.append(f"LOWER(a.receita_class_subgrupo) LIKE LOWER('%{spec.subgrupo}%')")
 
     if spec.receita:
-        where_clauses.append(f"LOWER(dsc_receita) LIKE LOWER('%{spec.receita}%')")
+        where_clauses.append(f"LOWER(a.dsc_receita) LIKE LOWER('%{spec.receita}%')")
+
+    if spec.decendio is not None:
+        where_clauses.append(
+            f"dr.decendio = '{spec.decendio} Decêndio'"
+        )    
 
     where_sql = ""
     if where_clauses:
@@ -50,7 +58,7 @@ def executar_serie_temporal(spec: QuerySpec):
 
     sql = f"""
     SELECT
-        TO_CHAR(DATE_TRUNC('month', dat_pagamento), 'YYYY-MM') AS mes,
+        TO_CHAR(DATE_TRUNC('month', a.dat_pagamento), 'YYYY-MM') AS mes,
         SUM({metric_col}) AS valor
     FROM {TABLE_NAME}
     {where_sql}
@@ -93,19 +101,24 @@ def executar_agregacao_simples(spec: QuerySpec):
     where_clauses = []
 
     if spec.start_date:
-        where_clauses.append(f"dat_pagamento >= '{spec.start_date}'")
+        where_clauses.append(f"a.dat_pagamento >= '{spec.start_date}'")
 
     if spec.end_date:
-        where_clauses.append(f"dat_pagamento <= '{spec.end_date}'")
+        where_clauses.append(f"a.dat_pagamento <= '{spec.end_date}'")
 
     if spec.segmento:
-        where_clauses.append(f"LOWER(dsc_segmento) LIKE LOWER('%{spec.segmento}%')")
+        where_clauses.append(f"LOWER(a.dsc_segmento) LIKE LOWER('%{spec.segmento}%')")
 
     if spec.subgrupo:
-        where_clauses.append(f"LOWER(receita_class_subgrupo) LIKE LOWER('%{spec.subgrupo}%')")
+        where_clauses.append(f"LOWER(a.receita_class_subgrupo) LIKE LOWER('%{spec.subgrupo}%')")
 
     if spec.receita:
-        where_clauses.append(f"LOWER(dsc_receita) LIKE LOWER('%{spec.receita}%')")
+        where_clauses.append(f"LOWER(a.dsc_receita) LIKE LOWER('%{spec.receita}%')")
+
+    if spec.decendio is not None:
+        where_clauses.append(
+            f"dr.decendio = '{spec.decendio} Decêndio'"
+        )    
 
     where_sql = ""
     if where_clauses:
@@ -117,6 +130,7 @@ def executar_agregacao_simples(spec: QuerySpec):
     if spec.top_n:
         limit_sql = f"LIMIT {spec.top_n}"
 
+    order_sql = "categoria ASC" if spec.group_by == "decendio" else f"valor {order_direction}"
 
     if spec.group_by == "total":
         sql = f"""
@@ -133,7 +147,7 @@ def executar_agregacao_simples(spec: QuerySpec):
         FROM {TABLE_NAME}
         {where_sql}
         GROUP BY 1
-        ORDER BY valor {order_direction}
+        ORDER BY {order_sql}
         {limit_sql}
         """
 
@@ -178,22 +192,27 @@ def executar_comparacao_periodos(spec: QuerySpec):
 
     where_clauses = [
         f"""(
-            (dat_pagamento >= '{spec.period_1_start}'
-            AND dat_pagamento <= '{spec.period_1_end}')
+            (a.dat_pagamento >= '{spec.period_1_start}'
+            AND a.dat_pagamento <= '{spec.period_1_end}')
             OR
-            (dat_pagamento >= '{spec.period_2_start}'
-            AND dat_pagamento <= '{spec.period_2_end}')
+            (a.dat_pagamento >= '{spec.period_2_start}'
+            AND a.dat_pagamento <= '{spec.period_2_end}')
         )"""
     ]
 
     if spec.segmento:
-        where_clauses.append(f"LOWER(dsc_segmento) LIKE LOWER('%{spec.segmento}%')")
+        where_clauses.append(f"LOWER(a.dsc_segmento) LIKE LOWER('%{spec.segmento}%')")
 
     if spec.subgrupo:
-        where_clauses.append(f"LOWER(receita_class_subgrupo) LIKE LOWER('%{spec.subgrupo}%')")
+        where_clauses.append(f"LOWER(a.receita_class_subgrupo) LIKE LOWER('%{spec.subgrupo}%')")
 
     if spec.receita:
-        where_clauses.append(f"LOWER(dsc_receita) LIKE LOWER('%{spec.receita}%')")
+        where_clauses.append(f"LOWER(a.dsc_receita) LIKE LOWER('%{spec.receita}%')")
+
+    if spec.decendio is not None:
+        where_clauses.append(
+            f"dr.decendio = '{spec.decendio} Decêndio'"
+        )    
 
     where_sql = "WHERE " + " AND ".join(where_clauses)
 
@@ -204,12 +223,14 @@ def executar_comparacao_periodos(spec: QuerySpec):
         else f"{group_sql} AS categoria,"
     )
 
+    compare_order_sql = "categoria ASC" if spec.group_by == "decendio" else "valor_periodo_2 DESC"
+
     group_order_sql = (
         ""
         if spec.group_by == "total"
         else f"""
         GROUP BY 1
-        ORDER BY valor_periodo_2 DESC
+        ORDER BY {compare_order_sql}
         LIMIT {spec.top_n or 20}
         """
     )
@@ -220,8 +241,8 @@ def executar_comparacao_periodos(spec: QuerySpec):
 
         SUM(
             CASE
-                WHEN dat_pagamento >= '{spec.period_1_start}'
-                 AND dat_pagamento <= '{spec.period_1_end}'
+                WHEN a.dat_pagamento >= '{spec.period_1_start}'
+                 AND a.dat_pagamento <= '{spec.period_1_end}'
                 THEN {metric_col}
                 ELSE 0
             END
@@ -229,8 +250,8 @@ def executar_comparacao_periodos(spec: QuerySpec):
 
         SUM(
             CASE
-                WHEN dat_pagamento >= '{spec.period_2_start}'
-                 AND dat_pagamento <= '{spec.period_2_end}'
+                WHEN a.dat_pagamento >= '{spec.period_2_start}'
+                 AND a.dat_pagamento <= '{spec.period_2_end}'
                 THEN {metric_col}
                 ELSE 0
             END

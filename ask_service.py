@@ -370,7 +370,8 @@ def gerar_summary(spec: QuerySpec) -> str:
         "receita": "receita",
         "codigo_receita": "código da receita",
         "subgrupo": "subgrupo da receita",
-        "segmento": "segmento"
+        "segmento": "segmento",
+        "decendio": "decêndio",
     }
 
     if spec.analysis_type == "time_series":

@@ -10,6 +10,39 @@ from llm_service import interpretar_pergunta_llm
 app = FastAPI()
 
 
+def preparar_dados_tabela(dados: list[dict], spec: QuerySpec) -> list[dict]:
+    """Acrescenta Total geral somente à tabela agrupada por decêndio.
+
+    Não modifica os dados de origem utilizados no gráfico.
+    """
+    linhas = [dict(row) for row in dados]
+    if spec.group_by != "decendio" or not linhas:
+        return linhas
+
+    if spec.analysis_type == "compare_periods":
+        label_1 = spec.period_1_label or "periodo_1"
+        label_2 = spec.period_2_label or "periodo_2"
+        total_1 = sum(float(row.get(label_1) or 0) for row in linhas)
+        total_2 = sum(float(row.get(label_2) or 0) for row in linhas)
+        diferenca = total_2 - total_1
+        total = {
+            "decendio": "Total geral",
+            label_1: total_1,
+            label_2: total_2,
+            "diferenca": diferenca,
+            "variacao_percentual": (diferenca / total_1 * 100) if total_1 else None,
+            "tendencia": "subiu" if diferenca > 0 else ("caiu" if diferenca < 0 else "estável"),
+        }
+    else:
+        total = {
+            "decendio": "Total geral",
+            spec.metric: sum(float(row.get(spec.metric) or 0) for row in linhas),
+        }
+
+    linhas.append(total)
+    return linhas
+
+
 @app.get("/")
 def home():
     return {"mensagem": "API funcionando"}
@@ -32,6 +65,7 @@ def gerar_grafico(spec: QuerySpec):
         "title": f"{spec.metric} por {spec.group_by}",
         "chart_type": spec.chart_type,
         "dados_brutos": dados,
+        "dados_tabela": preparar_dados_tabela(dados, spec),
         "plotly_json": fig.to_dict()
     }
 
@@ -88,6 +122,7 @@ def ask(req: AskRequest):
         "title": f"{spec.metric} por {spec.group_by}",
         "chart_type": spec.chart_type,
         "dados_brutos": dados,
+        "dados_tabela": preparar_dados_tabela(dados, spec),
         "plotly_json": fig.to_dict()
     }
 
@@ -105,12 +140,14 @@ def playground():
         <style>
             body {
                 font-family: Arial, sans-serif;
-                margin: 40px;
+                margin: 20px;
                 background: #f7f7f8;
                 color: #222;
             }
             .container {
-                max-width: 1000px;
+                max-width: 1400px;
+                width: calc(100% - 40px);
+                box-sizing: border-box;
                 margin: 0 auto;
                 background: white;
                 padding: 24px;
@@ -201,22 +238,53 @@ def playground():
                 display: none;
             }
 
-            table {
+            .table-scroll {
+                width: 100%;
+                overflow-x: auto;
+                margin-top: 8px;
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+            }
+            .data-table {
                 width: 100%;
                 border-collapse: collapse;
-                margin-top: 8px;
+                font-size: 14px;
             }
-
-            th, td {
-                border: 1px solid #e5e7eb;
-                padding: 8px 10px;
+            .data-table.comparacao {
+                min-width: 900px;
+            }
+            .data-table th, .data-table td {
+                border-bottom: 1px solid #e5e7eb;
+                padding: 11px 14px;
                 text-align: left;
+                vertical-align: middle;
             }
-
-            th {
+            .data-table th {
                 background: #f3f4f6;
-                font-weight: bold;
-            }            
+                font-weight: 600;
+                white-space: nowrap;
+            }
+            .data-table .numero {
+                text-align: right;
+                white-space: nowrap;
+                font-variant-numeric: tabular-nums;
+            }
+            .data-table .categoria {
+                white-space: nowrap;
+            }
+            .data-table tbody tr:nth-child(even):not(.total-geral) {
+                background: #f9fafb;
+            }
+            .data-table tr.total-geral td {
+                font-weight: 700;
+                background: #e9eef5;
+                border-top: 2px solid #94a3b8;
+            }
+            @media (max-width: 700px) {
+                body { margin: 8px; }
+                .container { width: 100%; padding: 12px; }
+                .data-table th, .data-table td { padding: 9px 10px; }
+            }
 
         </style>
     </head>
@@ -237,39 +305,48 @@ def playground():
             <button onclick="enviarPergunta()">Gerar resposta e comparar interpretações</button>
 
             <div class="examples">
-                <div class="muted">Exemplos clicáveis:</div>
+                <div class="muted">Experimente consultas com a LLM:</div>
 
-                <span class="example-chip" onclick="usarExemplo('qual o valor arrecadado por segmento no mês de abril de 2026?')">
-                    valor por segmento em abril/2026
+                <span class="example-chip" onclick="usarExemplo('Mostre a arrecadação de ICMS por decêndio em setembro de 2026.')">
+                    Decêndios · ICMS set/2026
                 </span>
 
-                <span class="example-chip" onclick="usarExemplo('quero comparar valor arrecadado por segmento entre abril de 2025 e abril de 2026')">
-                    abril/2025 vs abril/2026
+                <span class="example-chip" onclick="usarExemplo('Quanto arrecadamos de ICMS no segundo decêndio de setembro de 2026?')">
+                    2º decêndio · ICMS
                 </span>
 
-                <span class="example-chip" onclick="usarExemplo('quero comparar valor arrecadado apenas do segmento ATACADISTA entre abril de 2025 e abril de 2026')">
-                    comparar segmento ATACADISTA
+                <span class="example-chip" onclick="usarExemplo('Compare a arrecadação de ICMS por decêndio entre agosto e setembro de 2026.')">
+                    Decêndios · ago × set/2026
                 </span>
 
-                <span class="example-chip" onclick="usarExemplo('quero ver a arrecadação nos últimos 12 meses para o subgrupo ICMS')">
-                    últimos 12 meses ICMS
+                <span class="example-chip" onclick="usarExemplo('Compare o terceiro decêndio de agosto com o terceiro decêndio de setembro de 2026.')">
+                    3º decêndio · ago × set
                 </span>
 
-                <span class="example-chip" onclick="usarExemplo('quero a quantidade de DAE pagos por grupo de receita no mês de abril de 2026')">
-                    DAE por grupo de receita
+                <span class="example-chip" onclick="usarExemplo('Qual foi o total arrecadado de ICMS em setembro de 2026?')">
+                    Total de ICMS · set/2026
                 </span>
 
-                <span class="example-chip" onclick="usarExemplo('mostre valor arrecadado por receita no mês de abril de 2026')">
-                    valor por receita
+                <span class="example-chip" onclick="usarExemplo('Quanto arrecadamos em cada decêndio de setembro de 2026?')">
+                    Decêndios · todas as receitas
                 </span>
 
-                <span class="example-chip" onclick="usarExemplo('mostre valor arrecadado por data de pagamento no mês de abril de 2026')">
-                    série diária abril/2026
+                <span class="example-chip" onclick="usarExemplo('Quais segmentos arrecadaram mais com ICMS em abril de 2026?')">
+                    Segmentos · ICMS abr/2026
                 </span>
 
-                <span class="example-chip" onclick="usarExemplo('compare o valor arrecadado do subgrupo ICMS entre abril e maio de 2026')">
-                    ICMS abril vs maio
+                <span class="example-chip" onclick="usarExemplo('Quais receitas do subgrupo ICMS arrecadaram mais em maio de 2026?')">
+                    Receitas do ICMS · mai/2026
                 </span>
+
+                <span class="example-chip" onclick="usarExemplo('Quais subgrupos de receita tiveram maior arrecadação em junho de 2026?')">
+                    Subgrupos · jun/2026
+                </span>
+
+                <span class="example-chip" onclick="usarExemplo('Mostre como a arrecadação de ICMS evoluiu mês a mês nos últimos seis meses.')">
+                    Evolução mensal · ICMS
+                </span>
+
             </div>
 
             <div id="loading">Gerando resposta...</div>
@@ -345,42 +422,84 @@ def playground():
                 document.getElementById("loading").style.display = "none";
             }
 
+            const rotulosTabela = {
+                decendio: "Decêndio",
+                total: "Total",
+                valor_arrecadado: "Valor arrecadado (R$)",
+                qtd_documentos: "Documentos pagos",
+                diferenca: "Diferença (R$)",
+                variacao_percentual: "Variação (%)",
+                tendencia: "Tendência",
+                segmento: "Segmento econômico",
+                subgrupo: "Subgrupo de receita",
+                receita: "Receita",
+                codigo_receita: "Código da receita",
+                data_pagamento: "Data de pagamento",
+                mes: "Mês"
+            };
+
+            function escaparHtml(valor) {
+                return String(valor).replace(/[&<>"']/g, caractere => ({
+                    "&": "&amp;", "<": "&lt;", ">": "&gt;",
+                    '"': "&quot;", "'": "&#39;"
+                })[caractere]);
+            }
+
+            function rotuloColuna(coluna) {
+                if (rotulosTabela[coluna]) return rotulosTabela[coluna];
+                const periodo = coluna.match(/^(janeiro|fevereiro|marco|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)_([0-9]{4})$/i);
+                if (periodo) {
+                    const mes = periodo[1].charAt(0).toUpperCase() + periodo[1].slice(1);
+                    return mes + "/" + periodo[2];
+                }
+                return coluna.replace(/_/g, " ");
+            }
+
+            function formatarValor(coluna, valor) {
+                if (valor === null || valor === undefined) return "—";
+                if (typeof valor !== "number") return String(valor);
+
+                if (coluna === "variacao_percentual") {
+                    return valor.toLocaleString("pt-BR", {
+                        minimumFractionDigits: 2, maximumFractionDigits: 2
+                    }) + "%";
+                }
+                if (coluna === "qtd_documentos" || coluna === "codigo_receita") {
+                    return valor.toLocaleString("pt-BR", {maximumFractionDigits: 0});
+                }
+                return valor.toLocaleString("pt-BR", {
+                    minimumFractionDigits: 2, maximumFractionDigits: 2
+                });
+            }
+
             function renderizarTabela(dados) {
                 const container = document.getElementById("tableContainer");
-
                 if (!dados || dados.length === 0) {
                     container.innerHTML = "<p>Nenhum dado encontrado.</p>";
                     return;
                 }
-
                 const colunas = Object.keys(dados[0]);
-
-                let html = "<table>";
+                const comparacao = colunas.includes("variacao_percentual");
+                let html = `<div class="table-scroll"><table class="data-table${comparacao ? " comparacao" : ""}">`;
                 html += "<thead><tr>";
-
                 colunas.forEach(coluna => {
-                    html += `<th>${coluna}</th>`;
+                    const numerica = dados.some(row => typeof row[coluna] === "number");
+                    html += `<th class="${numerica ? "numero" : ""}">${escaparHtml(rotuloColuna(coluna))}</th>`;
                 });
-
-                html += "</tr></thead>";
-                html += "<tbody>";
-
+                html += "</tr></thead><tbody>";
                 dados.forEach(row => {
-                    html += "<tr>";
+                    const totalGeral = row.decendio === "Total geral";
+                    html += `<tr${totalGeral ? ' class="total-geral"' : ""}>`;
                     colunas.forEach(coluna => {
-                        let valor = row[coluna];
-
-                        if (typeof valor === "number") {
-                            valor = valor.toLocaleString("pt-BR");
-                        }
-
-                        html += `<td>${valor}</td>`;
+                        const valor = row[coluna];
+                        const numerica = typeof valor === "number" ||
+                            dados.some(item => typeof item[coluna] === "number");
+                        const classe = numerica ? "numero" : "categoria";
+                        html += `<td class="${classe}">${escaparHtml(formatarValor(coluna, valor))}</td>`;
                     });
                     html += "</tr>";
                 });
-
-                html += "</tbody></table>";
-
+                html += "</tbody></table></div>";
                 container.innerHTML = html;
             }
 
@@ -452,7 +571,7 @@ def playground():
                     document.getElementById("summaryText").textContent = data.summary || "Sem resumo disponível.";
                     document.getElementById("rawData").textContent = JSON.stringify(data.dados_brutos || [], null, 2);
 
-                    renderizarTabela(data.dados_brutos || []);
+                    renderizarTabela(data.dados_tabela || data.dados_brutos || []);
                     
                     Plotly.newPlot(
                         "chart",

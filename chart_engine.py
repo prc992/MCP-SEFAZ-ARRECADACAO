@@ -20,6 +20,14 @@ def gerar_plotly_figure(dados: list[dict], spec: QuerySpec):
         yaxis_title=spec.metric
     )
 
+    if spec.group_by == "decendio":
+        fig.update_xaxes(
+            type="category",
+            categoryorder="array",
+            categoryarray=["1 Decêndio", "2 Decêndio", "3 Decêndio"],
+            title_text="Decêndio",
+        )
+
     return fig
 
 
@@ -74,5 +82,13 @@ def gerar_grafico_comparacao(dados: list[dict], spec: QuerySpec):
         yaxis_title=spec.metric,
         barmode="group"
     )
+
+    if spec.group_by == "decendio":
+        fig.update_xaxes(
+            type="category",
+            categoryorder="array",
+            categoryarray=["1 Decêndio", "2 Decêndio", "3 Decêndio"],
+            title_text="Decêndio",
+        )
 
     return fig
