@@ -84,7 +84,11 @@ def executar_query(spec: QuerySpec):
 
 def executar_agregacao_simples(spec: QuerySpec):
     metric_col = METRIC_MAP[spec.metric]
-    group_sql = GROUP_BY_MAP[spec.group_by]
+
+    group_sql = (
+        None if spec.group_by == "total"
+        else GROUP_BY_MAP[spec.group_by]
+    )
 
     where_clauses = []
 
@@ -113,25 +117,45 @@ def executar_agregacao_simples(spec: QuerySpec):
     if spec.top_n:
         limit_sql = f"LIMIT {spec.top_n}"
 
-    sql = f"""
-    SELECT
-        {group_sql} AS categoria,
-        SUM({metric_col}) AS valor
-    FROM {TABLE_NAME}
-    {where_sql}
-    GROUP BY 1
-    ORDER BY valor {order_direction}
-    {limit_sql}
-    """
+
+    if spec.group_by == "total":
+        sql = f"""
+        SELECT
+            SUM({metric_col}) AS valor
+        FROM {TABLE_NAME}
+        {where_sql}
+        """
+    else:
+        sql = f"""
+        SELECT
+            {group_sql} AS categoria,
+            SUM({metric_col}) AS valor
+        FROM {TABLE_NAME}
+        {where_sql}
+        GROUP BY 1
+        ORDER BY valor {order_direction}
+        {limit_sql}
+        """
 
     dados = executar_sql(sql)
 
+
     resultado = []
+
     for row in dados:
-        resultado.append({
-            spec.group_by: row["categoria"],
-            spec.metric: float(row["valor"]) if row["valor"] is not None else 0
-        })
+        valor = float(row["valor"]) if row["valor"] is not None else 0
+
+        if spec.group_by == "total":
+            resultado.append({
+                "total": "Total",
+                spec.metric: valor
+            })
+        else:
+            resultado.append({
+                spec.group_by: row["categoria"],
+                spec.metric: valor
+            })
+
 
     if spec.group_by == "data_pagamento":
         resultado.sort(key=lambda row: row[spec.group_by])
@@ -143,14 +167,23 @@ def executar_agregacao_simples(spec: QuerySpec):
 
 def executar_comparacao_periodos(spec: QuerySpec):
     metric_col = METRIC_MAP[spec.metric]
-    group_sql = GROUP_BY_MAP[spec.group_by]
+
+    group_sql = (
+        None if spec.group_by == "total"
+        else GROUP_BY_MAP[spec.group_by]
+    )
 
     label_1 = spec.period_1_label or "periodo_1"
     label_2 = spec.period_2_label or "periodo_2"
 
     where_clauses = [
-        f"dat_pagamento >= '{spec.period_1_start}'",
-        f"dat_pagamento <= '{spec.period_2_end}'"
+        f"""(
+            (dat_pagamento >= '{spec.period_1_start}'
+            AND dat_pagamento <= '{spec.period_1_end}')
+            OR
+            (dat_pagamento >= '{spec.period_2_start}'
+            AND dat_pagamento <= '{spec.period_2_end}')
+        )"""
     ]
 
     if spec.segmento:
@@ -164,9 +197,26 @@ def executar_comparacao_periodos(spec: QuerySpec):
 
     where_sql = "WHERE " + " AND ".join(where_clauses)
 
+
+    select_categoria = (
+        "'Total' AS categoria,"
+        if spec.group_by == "total"
+        else f"{group_sql} AS categoria,"
+    )
+
+    group_order_sql = (
+        ""
+        if spec.group_by == "total"
+        else f"""
+        GROUP BY 1
+        ORDER BY valor_periodo_2 DESC
+        LIMIT {spec.top_n or 20}
+        """
+    )
+
     sql = f"""
     SELECT
-        {group_sql} AS categoria,
+        {select_categoria}
 
         SUM(
             CASE
@@ -188,10 +238,9 @@ def executar_comparacao_periodos(spec: QuerySpec):
 
     FROM {TABLE_NAME}
     {where_sql}
-    GROUP BY 1
-    ORDER BY valor_periodo_2 DESC
-    LIMIT {spec.top_n or 20}
+    {group_order_sql}
     """
+
 
     dados = executar_sql(sql)
 

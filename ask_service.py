@@ -364,7 +364,9 @@ def gerar_summary(spec: QuerySpec) -> str:
     }
 
     group_by_label = {
+        "total": "total",
         "data_pagamento": "data de pagamento",
+        "mes": "mês",
         "receita": "receita",
         "codigo_receita": "código da receita",
         "subgrupo": "subgrupo da receita",
@@ -392,7 +394,17 @@ def gerar_summary(spec: QuerySpec) -> str:
 
         return ", ".join(partes) + "."    
 
+
     if spec.analysis_type == "compare_periods":
+
+        if spec.group_by == "total":
+            return (
+                f"Consulta interpretada como comparação do total de "
+                f"{metric_label[spec.metric]} entre "
+                f"{spec.period_1_label} e {spec.period_2_label}, "
+                f"com cálculo de diferença, variação percentual e tendência."
+            )
+
         return (
             f"Consulta interpretada como comparação de {metric_label[spec.metric]} "
             f"por {group_by_label[spec.group_by]}, comparando "
@@ -400,9 +412,15 @@ def gerar_summary(spec: QuerySpec) -> str:
             f"com cálculo de diferença, variação percentual e tendência."
         )
 
-    partes = [
-        f"Consulta interpretada como {metric_label[spec.metric]} por {group_by_label[spec.group_by]}"
-    ]
+
+    if spec.group_by == "total":
+        partes = [
+            f"Consulta interpretada como total de {metric_label[spec.metric]}"
+        ]
+    else:
+        partes = [
+            f"Consulta interpretada como {metric_label[spec.metric]} por {group_by_label[spec.group_by]}"
+        ]
 
     if spec.start_date and spec.end_date:
         partes.append(f"no período de {spec.start_date} a {spec.end_date}")

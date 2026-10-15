@@ -5,6 +5,7 @@ from query_engine import executar_query
 from chart_engine import gerar_plotly_figure
 from metadata_service import get_metadata
 from ask_service import interpretar_pergunta, gerar_summary
+from llm_service import interpretar_pergunta_llm
 
 app = FastAPI()
 
@@ -47,25 +48,42 @@ def gerar_grafico_html(spec: QuerySpec):
 
 @app.post("/ask")
 def ask(req: AskRequest):
-    try:
-        spec = interpretar_pergunta(req.question)
-    except ValueError as e:
-        return {
-            "question": req.question,
-            "error": str(e)
-        }
-   
+    # Os parsers são independentes: falha na LLM não impede o uso das regras.
+    interpretacoes = {}
+    erros = {}
+    for nome, funcao in (("regras", interpretar_pergunta), ("llm", interpretar_pergunta_llm)):
+        try:
+            interpretacoes[nome] = funcao(req.question)
+        except Exception as exc:
+            erros[nome] = (f"{type(exc).__name__}: {exc}" if nome == "regras"
+                           else f"Falha no parser LLM ({type(exc).__name__}). Verifique chave, modelo, conectividade e logs.")
+
+    # Modo selecionado controla apenas qual QuerySpec será EXECUTADO.
+    # Compatibilidade: sem parser, o comportamento anterior (regras) permanece.
+    parser = req.parser
+    if parser not in interpretacoes:
+        if parser == "llm":
+            return {"question": req.question, "error": erros.get("llm", "Parser LLM indisponível"),
+                    "interpretacoes": {k: v.model_dump() for k, v in interpretacoes.items()},
+                    "erros_interpretacao": erros}
+        if "regras" not in interpretacoes:
+            return {"question": req.question, "error": erros.get("regras", "Parser indisponível"),
+                    "interpretacoes": {k: v.model_dump() for k, v in interpretacoes.items()},
+                    "erros_interpretacao": erros}
+
+    spec = interpretacoes[parser]
     query_result = executar_query(spec)
     dados = query_result["dados"]
     sql = query_result["sql"]
-
     fig = gerar_plotly_figure(dados, spec)
-    summary = gerar_summary(spec)
 
     return {
         "question": req.question,
+        "parser_executado": parser,
+        "interpretacoes": {k: v.model_dump() for k, v in interpretacoes.items()},
+        "erros_interpretacao": erros,
         "query_interpretada": spec.model_dump(),
-        "summary": summary,
+        "summary": gerar_summary(spec),
         "sql": sql,
         "title": f"{spec.metric} por {spec.group_by}",
         "chart_type": spec.chart_type,
@@ -211,7 +229,12 @@ def playground():
 
             <textarea id="questionInput" placeholder="Ex.: quero um gráfico de barra de valor arrecadado por município top 1"></textarea>
             <br />
-            <button onclick="enviarPergunta()">Gerar resposta</button>
+            <label for="parserSelect">Executar consulta usando:</label>
+            <select id="parserSelect">
+                <option value="regras">Parser por regras (original)</option>
+                <option value="llm">Parser por LLM</option>
+            </select>
+            <button onclick="enviarPergunta()">Gerar resposta e comparar interpretações</button>
 
             <div class="examples">
                 <div class="muted">Exemplos clicáveis:</div>
@@ -261,6 +284,12 @@ def playground():
 
                 <div class="section">
                     <div class="label">Interpretação do engine</div>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;">
+                        <div><strong>Regras</strong><pre id="rulesQuery"></pre></div>
+                        <div><strong>LLM</strong><pre id="llmQuery"></pre></div>
+                    </div>
+                    <div class="muted" id="comparisonText"></div>
+                    <p class="muted">QuerySpec efetivamente executado:</p>
                     <pre id="interpretedQuery"></pre>
                 </div>
 
@@ -368,12 +397,13 @@ def playground():
                 document.getElementById("resultado").style.display = "none";
 
                 try {
+                    const parser = document.getElementById("parserSelect").value;
                     const response = await fetch("/ask", {
                         method: "POST",
                         headers: {
                             "Content-Type": "application/json"
                         },
-                        body: JSON.stringify({ question })
+                        body: JSON.stringify({ question, parser })
                     });
 
                     if (!response.ok) {
@@ -383,6 +413,34 @@ def playground():
 
                     const data = await response.json();
 
+                    const specs = data.interpretacoes || {};
+                    const erros = data.erros_interpretacao || {};
+                    document.getElementById("rulesQuery").textContent = specs.regras
+                        ? JSON.stringify(specs.regras, null, 2) : (erros.regras || "Indisponível");
+                    document.getElementById("llmQuery").textContent = specs.llm
+                        ? JSON.stringify(specs.llm, null, 2) : (erros.llm || "Indisponível");
+                    if (specs.regras && specs.llm) {
+                        const diferentes = Object.keys(specs.regras).filter(
+                            k => JSON.stringify(specs.regras[k]) !== JSON.stringify(specs.llm[k])
+                        );
+                        document.getElementById("comparisonText").textContent = diferentes.length
+                            ? "Campos divergentes: " + diferentes.join(", ")
+                            : "As duas interpretações são idênticas.";
+                    } else {
+                        document.getElementById("comparisonText").textContent = "Comparação incompleta: um dos parsers está indisponível.";
+                    }
+                    if (data.error) {
+                        document.getElementById("resultado").style.display = "block";
+                        document.getElementById("questionText").textContent = data.question || "";
+                        document.getElementById("interpretedQuery").textContent = "Nenhuma consulta executada.";
+                        document.getElementById("sqlText").textContent = "SQL não executado.";
+                        document.getElementById("summaryText").textContent = "Parser selecionado indisponível.";
+                        document.getElementById("rawData").textContent = "[]";
+                        document.getElementById("tableContainer").textContent = "";
+                        Plotly.purge("chart");
+                        mostrarErro(data.error);
+                        return;
+                    }
                     if (!data.query_interpretada || !data.plotly_json) {
                         throw new Error("Não foi possível interpretar a pergunta com os dados esperados.");
                     }

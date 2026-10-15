@@ -27,6 +27,29 @@ def gerar_grafico_comparacao(dados: list[dict], spec: QuerySpec):
     label_1 = spec.period_1_label or "periodo_1"
     label_2 = spec.period_2_label or "periodo_2"
 
+    if spec.group_by == "total":
+        valor_1 = dados[0][label_1] if dados else 0
+        valor_2 = dados[0][label_2] if dados else 0
+
+        fig = go.Figure()
+
+        fig.add_trace(go.Bar(
+            x=[label_1, label_2],
+            y=[valor_1, valor_2],
+            text=[valor_1, valor_2],
+            textposition="auto"
+        ))
+
+        fig.update_layout(
+            title=f"Comparação de {spec.metric}: {label_1} vs {label_2}",
+            xaxis_title="Período",
+            yaxis_title=spec.metric,
+            showlegend=False
+        )
+
+        return fig
+
+
     x = [row[spec.group_by] for row in dados]
     y1 = [row[label_1] for row in dados]
     y2 = [row[label_2] for row in dados]

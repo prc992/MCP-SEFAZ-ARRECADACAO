@@ -5,6 +5,7 @@ from typing import Literal
 class QuerySpec(BaseModel):
     metric: Literal["valor_arrecadado", "qtd_documentos"]
     group_by: Literal[
+        "total",
         "data_pagamento",
         "mes",
         "receita",
@@ -37,3 +38,4 @@ class QuerySpec(BaseModel):
 
 class AskRequest(BaseModel):
     question: str
+    parser: Literal["regras", "llm"] = "regras"
