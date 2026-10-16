@@ -81,6 +81,9 @@ def executar_serie_temporal(spec: QuerySpec):
 }
 
 def executar_query(spec: QuerySpec):
+    if spec.report_type == "icms_fecop":
+        return executar_relatorio_icms_fecop(spec)
+
     if spec.analysis_type == "compare_periods":
         return executar_comparacao_periodos(spec)
 
@@ -296,3 +299,101 @@ def executar_comparacao_periodos(spec: QuerySpec):
     "dados": resultado,
     "sql": sql
 }
+
+# Relatório fiscal ICMS/FECOP: A = ICMS; B = FECOP; C = A-B; D = 60% de C.
+def executar_relatorio_icms_fecop(spec: QuerySpec):
+    if spec.analysis_type not in ("aggregate", "compare_periods"):
+        raise ValueError("O relatório ICMS/FECOP aceita aggregate ou compare_periods.")
+    if spec.group_by not in ("decendio", "total"):
+        raise ValueError("O relatório ICMS/FECOP aceita group_by decendio ou total.")
+    if spec.subgrupo and spec.subgrupo.strip().upper() != "ICMS":
+        raise ValueError("O relatório ICMS/FECOP é exclusivo do subgrupo ICMS.")
+    if spec.receita:
+        raise ValueError("O relatório ICMS/FECOP não aceita filtro por receita individual.")
+
+    filtros = ["a.receita_class_subgrupo = 'ICMS'"]
+    if spec.segmento:
+        # Escapa aspas simples, como proteção básica ao interpolar valores.
+        segmento = spec.segmento.replace("'", "''")
+        filtros.append(f"LOWER(a.dsc_segmento) LIKE LOWER('%{segmento}%')")
+    if spec.decendio is not None:
+        filtros.append(f"dr.decendio = '{spec.decendio} Decêndio'")
+
+    def intervalo(inicio, fim):
+        from datetime import date
+        if not inicio or not fim:
+            raise ValueError("Informe as datas inicial e final do relatório ICMS/FECOP.")
+        data_inicio = date.fromisoformat(inicio)
+        data_fim = date.fromisoformat(fim)
+        if data_inicio > data_fim:
+            raise ValueError("A data inicial não pode ser posterior à final.")
+        return (f"a.dat_pagamento >= DATE '{data_inicio.isoformat()}' "
+                f"AND a.dat_pagamento < DATEADD(day, 1, DATE '{data_fim.isoformat()}')")
+
+    agrupamento = "dr.decendio" if spec.group_by == "decendio" else "'Total'"
+    group_by_sql = "GROUP BY 1" if spec.group_by == "decendio" else ""
+    order_by_sql = "ORDER BY 1" if spec.group_by == "decendio" else ""
+
+    if spec.analysis_type == "aggregate":
+        filtros.append(intervalo(spec.start_date, spec.end_date))
+        where_sql = " AND ".join(filtros)
+        sql = f"""
+        WITH base AS (
+            SELECT {agrupamento} AS categoria,
+                   COUNT(*) AS qtd_registros,
+                   SUM(a.vlr_arrecadado) AS icms_a,
+                   SUM(CASE WHEN a.tip_fecop = 1 THEN a.vlr_arrecadado ELSE 0 END) AS fecop_b
+            FROM {TABLE_NAME}
+            WHERE {where_sql}
+            {group_by_sql}
+        )
+        SELECT categoria, qtd_registros, icms_a, fecop_b,
+               icms_a - fecop_b AS icms_sem_fecop_c,
+               (icms_a - fecop_b) * 0.60 AS icms_liquido_tesouro_d
+        FROM base
+        {order_by_sql}
+        """
+        linhas = executar_sql(sql)
+        dados = []
+        for row in linhas:
+            if not row["qtd_registros"]:
+                continue
+            dados.append({
+                spec.group_by: row["categoria"],
+                **{chave: float(row[chave]) if row[chave] is not None else None
+                   for chave in ("icms_a", "fecop_b", "icms_sem_fecop_c", "icms_liquido_tesouro_d")}
+            })
+        return {"dados": dados, "sql": sql}
+
+    periodo_1 = intervalo(spec.period_1_start, spec.period_1_end)
+    periodo_2 = intervalo(spec.period_2_start, spec.period_2_end)
+    filtros.append(f"(({periodo_1}) OR ({periodo_2}))")
+    where_sql = " AND ".join(filtros)
+    sql = f"""
+    WITH base AS (
+        SELECT {agrupamento} AS categoria,
+               CASE WHEN {periodo_1} THEN 1 ELSE 2 END AS periodo,
+               COUNT(*) AS qtd_registros,
+               SUM(a.vlr_arrecadado) AS icms_a,
+               SUM(CASE WHEN a.tip_fecop = 1 THEN a.vlr_arrecadado ELSE 0 END) AS fecop_b
+        FROM {TABLE_NAME}
+        WHERE {where_sql}
+        GROUP BY 1, 2
+    )
+    SELECT categoria, periodo, qtd_registros, icms_a, fecop_b,
+           icms_a - fecop_b AS icms_sem_fecop_c,
+           (icms_a - fecop_b) * 0.60 AS icms_liquido_tesouro_d
+    FROM base
+    ORDER BY categoria, periodo
+    """
+    # Cada linha identifica explicitamente o período, facilitando quatro gráficos agrupados.
+    dados = []
+    for row in executar_sql(sql):
+        dados.append({
+            spec.group_by: row["categoria"],
+            "periodo": ((spec.period_1_label or "periodo_1") if row["periodo"] == 1
+                        else (spec.period_2_label or "periodo_2")),
+            **{chave: float(row[chave]) if row[chave] is not None else None
+               for chave in ("icms_a", "fecop_b", "icms_sem_fecop_c", "icms_liquido_tesouro_d")}
+        })
+    return {"dados": dados, "sql": sql}

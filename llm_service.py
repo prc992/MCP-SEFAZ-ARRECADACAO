@@ -17,6 +17,29 @@ Sua ÚNICA tarefa é preencher o contrato QuerySpec fornecido; não gere SQL nem
 Regras de interpretação:
 - metric: valor_arrecadado para valores; qtd_documentos somente para contagem de documentos/DAEs.
 
+- report_type: use "standard" para consultas tradicionais; use "icms_fecop"
+  quando o usuário solicitar composição de ICMS e FECOP, mencionar
+  FECOP, ICMS sem FECOP, ICMS líquido ou ICMS líquido Tesouro.
+  Nesse relatório, a consulta SQL retorna os quatro indicadores:
+  A=ICMS bruto (inclui FECOP); B=FECOP (tip_fecop=1 dentro de ICMS);
+  C=A-B; D=60% de C. Nunca tente calcular valores na LLM.
+- Em report_type="icms_fecop", use metric="valor_arrecadado",
+  receita=null, subgrupo="ICMS" ou null, chart_type="bar";
+  analysis_type="aggregate" ou "compare_periods" somente.
+  group_by deve ser "decendio" (todos os decêndios) ou "total"
+  (total geral ou apenas um decêndio filtrado).
+- "ICMS" isoladamente, sem referência ao FECOP, ICMS sem FECOP,
+  ICMS líquido Tesouro ou composição fiscal, continua sendo
+  report_type="standard" e filtro subgrupo="ICMS".
+- Um ano inteiro solicitado "por decêndio" agrega conjuntamente
+  todos os primeiros, segundos e terceiros decêndios do ano:
+  use group_by="decendio", sem separar por mês.
+- Comparar composição de dois meses por decêndio exige
+  report_type="icms_fecop", analysis_type="compare_periods",
+  group_by="decendio", decendio=null e os dois intervalos completos.
+- Preserve períodos futuros/sem dados conforme solicitados; a LLM
+  não presume valores nulos ou zero e não altera datas para outros anos.
+
 - group_by determina a dimensão de agrupamento dos dados.
 
 - Valores permitidos:

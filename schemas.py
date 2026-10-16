@@ -19,6 +19,7 @@ class QuerySpec(BaseModel):
     order_desc: bool = True
 
     analysis_type: Literal["aggregate", "compare_periods", "time_series"] = "aggregate"
+    report_type: Literal["standard", "icms_fecop"] = "standard"
     months_back: int | None = None
 
     start_date: str | None = None
@@ -41,4 +42,3 @@ class QuerySpec(BaseModel):
 
 class AskRequest(BaseModel):
     question: str
-    parser: Literal["regras", "llm"] = "regras"

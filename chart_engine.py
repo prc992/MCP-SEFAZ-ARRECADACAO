@@ -92,3 +92,56 @@ def gerar_grafico_comparacao(dados: list[dict], spec: QuerySpec):
         )
 
     return fig
+
+# Quatro gráficos independentes para o demonstrativo fiscal ICMS/FECOP.
+INDICADORES_FECOP = {
+    "icms_a": "A — ICMS bruto",
+    "fecop_b": "B — FECOP",
+    "icms_sem_fecop_c": "C — ICMS sem FECOP",
+    "icms_liquido_tesouro_d": "D — ICMS líquido Tesouro (60% de C)",
+}
+
+
+def gerar_graficos_icms_fecop(dados: list[dict], spec: QuerySpec) -> list[go.Figure]:
+    categoria = spec.group_by
+    comparacao = spec.analysis_type == "compare_periods"
+    periodos = [spec.period_1_label or "periodo_1", spec.period_2_label or "periodo_2"]
+    categorias = (["1 Decêndio", "2 Decêndio", "3 Decêndio"]
+                  if categoria == "decendio" else ["Total"])
+    # Exibir apenas as categorias efetivamente presentes na consulta.
+    presentes = {r.get(categoria) for r in dados}
+    categorias = [c for c in categorias if c in presentes]
+    if not categorias:
+        categorias = list(dict.fromkeys(r.get(categoria) for r in dados))
+
+    figuras = []
+    for chave, titulo in INDICADORES_FECOP.items():
+        fig = go.Figure()
+        if comparacao:
+            for periodo in periodos:
+                valores = {r.get(categoria): r.get(chave)
+                           for r in dados if r.get("periodo") == periodo}
+                fig.add_trace(go.Bar(
+                    x=categorias, y=[valores.get(c) for c in categorias],
+                    name=periodo.replace("_", "/"),
+                    hovertemplate="%{x}<br>R$ %{y:,.2f}<extra>%{fullData.name}</extra>",
+                ))
+        else:
+            valores = {r.get(categoria): r.get(chave) for r in dados}
+            fig.add_trace(go.Bar(
+                x=categorias, y=[valores.get(c) for c in categorias],
+                name=titulo,
+                hovertemplate="%{x}<br>R$ %{y:,.2f}<extra></extra>",
+            ))
+        fig.update_layout(
+            title=titulo, xaxis_title="Decêndio" if categoria == "decendio" else "Total",
+            yaxis_title="Arrecadação (R$)",
+            barmode="group", template="plotly_white", height=370,
+            margin=dict(t=65, l=65, r=18, b=55),
+            showlegend=comparacao,
+            separators=",.",
+        )
+        fig.update_xaxes(type="category", categoryorder="array", categoryarray=categorias)
+        fig.update_yaxes(tickformat=",.2s")
+        figuras.append(fig)
+    return figuras

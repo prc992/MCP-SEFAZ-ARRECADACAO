@@ -1,4 +1,3 @@
-
 # business_metadata.py
 
 BUSINESS_METADATA = """
@@ -101,6 +100,61 @@ Exemplos:
 
 A dimensão decendio é independente dos filtros de receita,
 subgrupo e segmento econômico.
+
+6. RELATÓRIO DE COMPOSIÇÃO ICMS/FECOP
+Campo QuerySpec: report_type="icms_fecop" (padrão: "standard").
+
+O Fundo Estadual de Combate à Pobreza (FECOP) corresponde,
+nesta base, à parcela da arrecadação de ICMS marcada por
+f_arrecadacao_diaria_consolidada.tip_fecop = 1.
+
+Indicadores deste relatório, todos calculados no SQL:
+A - ICMS bruto (icms_a): SUM(vlr_arrecadado) dos registros
+    com receita_class_subgrupo = 'ICMS'. Inclui FECOP.
+B - FECOP (fecop_b): SUM(vlr_arrecadado) apenas dos registros
+    de A com tip_fecop = 1. É subconjunto de A.
+C - ICMS sem FECOP (icms_sem_fecop_c): A - B.
+D - ICMS líquido Tesouro (icms_liquido_tesouro_d): 0,60 * C.
+
+Use report_type="icms_fecop" em pedidos de composição,
+detalhamento conjunto, comparação de ICMS e FECOP, ou quando
+forem mencionados FECOP, ICMS sem FECOP ou ICMS líquido Tesouro
+como indicadores. O relatório retorna A, B, C e D juntos,
+mesmo quando a pergunta destacar um dos indicadores.
+
+Neste relatório, use metric="valor_arrecadado" e não filtre
+receita individual: receita=null. A restrição ao subgrupo
+ICMS é aplicada diretamente no SQL; subgrupo="ICMS" ou null
+são compatíveis. Não selecione outros subgrupos.
+
+Agrupamentos suportados no relatório: group_by="decendio" ou
+group_by="total". Tipos de análise: aggregate e compare_periods.
+Em pedidos por decêndio, use group_by="decendio", decendio=null.
+Em pedidos restritos a um único decêndio, use group_by="total"
+e decendio=1, 2 ou 3. Sem agrupamento, use group_by="total".
+
+Para um ano inteiro solicitado "por decêndio", cada linha
+agrega os decêndios de mesmo número dos 12 meses, sem separar
+mês a mês. Não crie um agrupamento novo.
+Para comparação de meses, preserve os dois intervalos completos
+e use compare_periods, com labels nome_mes_ano.
+
+A disponibilidade de dados deve ser verificada no banco.
+Não considere um período sem registros como arrecadação zero
+nem altere períodos explicitamente solicitados.
+
+Exemplos:
+- "Composição de ICMS e FECOP por decêndio em dezembro de 2025":
+  report_type="icms_fecop", analysis_type="aggregate",
+  group_by="decendio", start_date="2025-12-01",
+  end_date="2025-12-31", decendio=null.
+- "Compare ICMS, FECOP, ICMS sem FECOP e ICMS líquido Tesouro
+  por decêndio entre setembro de 2025 e setembro de 2026":
+  report_type="icms_fecop", analysis_type="compare_periods",
+  group_by="decendio", decendio=null; ambos os intervalos.
+- "Arrecadação de ICMS por decêndio":
+  report_type="standard" quando não houver pedido de composição
+  nem referência a FECOP, C ou D.
 
 REGRAS GERAIS:
 

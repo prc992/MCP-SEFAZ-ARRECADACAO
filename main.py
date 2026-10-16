@@ -2,9 +2,9 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from schemas import QuerySpec, AskRequest
 from query_engine import executar_query
-from chart_engine import gerar_plotly_figure
+from chart_engine import gerar_plotly_figure, gerar_graficos_icms_fecop
 from metadata_service import get_metadata
-from ask_service import interpretar_pergunta, gerar_summary
+from ask_service import gerar_summary
 from llm_service import interpretar_pergunta_llm
 
 app = FastAPI()
@@ -15,6 +15,26 @@ def preparar_dados_tabela(dados: list[dict], spec: QuerySpec) -> list[dict]:
 
     Não modifica os dados de origem utilizados no gráfico.
     """
+    if spec.report_type == "icms_fecop":
+        linhas = [dict(row) for row in dados]
+        if spec.group_by != "decendio" or not linhas:
+            return linhas
+        indicadores = ("icms_a", "fecop_b", "icms_sem_fecop_c", "icms_liquido_tesouro_d")
+        if spec.analysis_type == "compare_periods":
+            # Um subtotal por período, sem confundir valores de anos diferentes.
+            resultado = []
+            for periodo in (spec.period_1_label or "periodo_1", spec.period_2_label or "periodo_2"):
+                grupo = [row for row in linhas if row.get("periodo") == periodo]
+                resultado.extend(grupo)
+                if grupo:
+                    resultado.append({"decendio": "Total geral", "periodo": periodo,
+                        **{chave: sum(float(row.get(chave) or 0) for row in grupo)
+                           for chave in indicadores}})
+            return resultado
+        return linhas + [{"decendio": "Total geral",
+            **{chave: sum(float(row.get(chave) or 0) for row in linhas)
+               for chave in indicadores}}]
+
     linhas = [dict(row) for row in dados]
     if spec.group_by != "decendio" or not linhas:
         return linhas
@@ -43,6 +63,27 @@ def preparar_dados_tabela(dados: list[dict], spec: QuerySpec) -> list[dict]:
     return linhas
 
 
+def preparar_graficos(dados: list[dict], spec: QuerySpec):
+    """Mantém plotly_json legado e acrescenta plotly_charts no relatório fiscal."""
+    if spec.report_type == "icms_fecop":
+        graficos = [fig.to_dict() for fig in gerar_graficos_icms_fecop(dados, spec)]
+        return graficos[0], graficos
+    fig = gerar_plotly_figure(dados, spec)
+    return fig.to_dict(), None
+
+
+def resumo_relatorio(spec: QuerySpec):
+    if spec.report_type != "icms_fecop":
+        return gerar_summary(spec)
+    if spec.analysis_type == "compare_periods":
+        periodo = f"comparação entre {spec.period_1_label or 'período 1'} e {spec.period_2_label or 'período 2'}"
+    else:
+        periodo = f"período de {spec.start_date} a {spec.end_date}"
+    dimensao = "por decêndio" if spec.group_by == "decendio" else "consolidado"
+    return (f"Composição do ICMS/FECOP {dimensao}, {periodo}: "
+            "A = ICMS bruto; B = FECOP; C = A − B; D = 60% de C.")
+
+
 @app.get("/")
 def home():
     return {"mensagem": "API funcionando"}
@@ -59,14 +100,15 @@ def gerar_grafico(spec: QuerySpec):
     dados = query_result["dados"]
     sql = query_result["sql"]
 
-    fig = gerar_plotly_figure(dados, spec)
+    plotly_json, plotly_charts = preparar_graficos(dados, spec)
 
     return {
         "title": f"{spec.metric} por {spec.group_by}",
         "chart_type": spec.chart_type,
         "dados_brutos": dados,
         "dados_tabela": preparar_dados_tabela(dados, spec),
-        "plotly_json": fig.to_dict()
+        "plotly_json": plotly_json,
+        "plotly_charts": plotly_charts
     }
 
 
@@ -76,54 +118,53 @@ def gerar_grafico_html(spec: QuerySpec):
     dados = query_result["dados"]
     sql = query_result["sql"]
 
+    if spec.report_type == "icms_fecop":
+        from plotly.offline import plot
+        figuras = gerar_graficos_icms_fecop(dados, spec)
+        blocos = [plot(fig, include_plotlyjs="cdn" if i == 0 else False, output_type="div")
+                  for i, fig in enumerate(figuras)]
+        return HTMLResponse(content="<html><body>" + "".join(blocos) + "</body></html>")
     fig = gerar_plotly_figure(dados, spec)
     return HTMLResponse(content=fig.to_html(full_html=True))
 
 
 @app.post("/ask")
 def ask(req: AskRequest):
-    # Os parsers são independentes: falha na LLM não impede o uso das regras.
-    interpretacoes = {}
-    erros = {}
-    for nome, funcao in (("regras", interpretar_pergunta), ("llm", interpretar_pergunta_llm)):
-        try:
-            interpretacoes[nome] = funcao(req.question)
-        except Exception as exc:
-            erros[nome] = (f"{type(exc).__name__}: {exc}" if nome == "regras"
-                           else f"Falha no parser LLM ({type(exc).__name__}). Verifique chave, modelo, conectividade e logs.")
+    """Interpreta perguntas exclusivamente com a LLM.
 
-    # Modo selecionado controla apenas qual QuerySpec será EXECUTADO.
-    # Compatibilidade: sem parser, o comportamento anterior (regras) permanece.
-    parser = req.parser
-    if parser not in interpretacoes:
-        if parser == "llm":
-            return {"question": req.question, "error": erros.get("llm", "Parser LLM indisponível"),
-                    "interpretacoes": {k: v.model_dump() for k, v in interpretacoes.items()},
-                    "erros_interpretacao": erros}
-        if "regras" not in interpretacoes:
-            return {"question": req.question, "error": erros.get("regras", "Parser indisponível"),
-                    "interpretacoes": {k: v.model_dump() for k, v in interpretacoes.items()},
-                    "erros_interpretacao": erros}
+    O campo legado `parser` do AskRequest é ignorado para compatibilidade
+    com eventuais clientes que ainda o enviem.
+    """
+    try:
+        spec = interpretar_pergunta_llm(req.question)
+    except Exception as exc:
+        return {
+            "question": req.question,
+            "error": (f"Falha na interpretação por LLM ({type(exc).__name__}). "
+                      "Verifique a configuração, a conectividade e os logs."),
+            "interpretacoes": {},
+            "erros_interpretacao": {"llm": type(exc).__name__}
+        }
 
-    spec = interpretacoes[parser]
     query_result = executar_query(spec)
     dados = query_result["dados"]
     sql = query_result["sql"]
-    fig = gerar_plotly_figure(dados, spec)
+    plotly_json, plotly_charts = preparar_graficos(dados, spec)
 
     return {
         "question": req.question,
-        "parser_executado": parser,
-        "interpretacoes": {k: v.model_dump() for k, v in interpretacoes.items()},
-        "erros_interpretacao": erros,
+        "parser_executado": "llm",
+        "interpretacoes": {"llm": spec.model_dump()},
+        "erros_interpretacao": {},
         "query_interpretada": spec.model_dump(),
-        "summary": gerar_summary(spec),
+        "summary": resumo_relatorio(spec),
         "sql": sql,
         "title": f"{spec.metric} por {spec.group_by}",
         "chart_type": spec.chart_type,
         "dados_brutos": dados,
         "dados_tabela": preparar_dados_tabela(dados, spec),
-        "plotly_json": fig.to_dict()
+        "plotly_json": plotly_json,
+        "plotly_charts": plotly_charts
     }
 
 
@@ -199,9 +240,25 @@ def playground():
                 border-radius: 8px;
                 overflow-x: auto;
             }
-            #chart {
-                margin-top: 20px;
+            #chart { margin-top: 20px; }
+            .charts-grid {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 16px;
+                width: 100%;
+                min-width: 0;
             }
+            .chart-panel {
+                width: 100%;
+                min-width: 0;
+                box-sizing: border-box;
+                background: white;
+                border-radius: 8px;
+            }
+            @media (max-width: 1050px) {
+                .charts-grid { grid-template-columns: minmax(0, 1fr); }
+            }
+
             .muted {
                 color: #666;
                 font-size: 14px;
@@ -292,20 +349,19 @@ def playground():
         <div class="container">
             <h1>Pergunta → Interpretação → Gráfico</h1>
             <p class="muted">
-                Digite uma pergunta em linguagem natural. O engine vai interpretar a consulta e gerar um gráfico.
+                Digite uma pergunta em linguagem natural. A LLM interpreta a consulta e apresenta os resultados.
             </p>
 
-            <textarea id="questionInput" placeholder="Ex.: quero um gráfico de barra de valor arrecadado por município top 1"></textarea>
+            <textarea id="questionInput" placeholder="Ex.: compare ICMS e FECOP por decêndio entre setembro de 2025 e setembro de 2026"></textarea>
             <br />
-            <label for="parserSelect">Executar consulta usando:</label>
-            <select id="parserSelect">
-                <option value="regras">Parser por regras (original)</option>
-                <option value="llm">Parser por LLM</option>
-            </select>
-            <button onclick="enviarPergunta()">Gerar resposta e comparar interpretações</button>
+            <button onclick="enviarPergunta()">Gerar resposta</button>
 
             <div class="examples">
                 <div class="muted">Experimente consultas com a LLM:</div>
+                <span class="example-chip" onclick="usarExemplo('Mostre a composição de ICMS e FECOP por decêndio em dezembro de 2025.')">ICMS/FECOP · dez/2025</span>
+                <span class="example-chip" onclick="usarExemplo('Compare a composição de ICMS e FECOP por decêndio entre setembro de 2025 e setembro de 2026.')">ICMS/FECOP · set/25 × set/26</span>
+                <span class="example-chip" onclick="usarExemplo('Quanto arrecadamos de FECOP no segundo decêndio de dezembro de 2025?')">FECOP · 2º decêndio</span>
+
 
                 <span class="example-chip" onclick="usarExemplo('Mostre a arrecadação de ICMS por decêndio em setembro de 2026.')">
                     Decêndios · ICMS set/2026
@@ -360,13 +416,8 @@ def playground():
                 </div>
 
                 <div class="section">
-                    <div class="label">Interpretação do engine</div>
-                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;">
-                        <div><strong>Regras</strong><pre id="rulesQuery"></pre></div>
-                        <div><strong>LLM</strong><pre id="llmQuery"></pre></div>
-                    </div>
-                    <div class="muted" id="comparisonText"></div>
-                    <p class="muted">QuerySpec efetivamente executado:</p>
+                    <div class="label">Interpretação da pergunta (LLM)</div>
+                    <p class="muted">QuerySpec executado:</p>
                     <pre id="interpretedQuery"></pre>
                 </div>
 
@@ -391,7 +442,8 @@ def playground():
                 </div>                
 
                 <div class="section">
-                    <div class="label">Gráfico</div>
+                    <div class="label">Gráficos</div>
+                    <div id="chartsContainer" class="charts-grid" style="display:none;"></div>
                     <div id="chart"></div>
                 </div>
             </div>
@@ -435,7 +487,12 @@ def playground():
                 receita: "Receita",
                 codigo_receita: "Código da receita",
                 data_pagamento: "Data de pagamento",
-                mes: "Mês"
+                mes: "Mês",
+                periodo: "Período",
+                icms_a: "ICMS (A) — R$",
+                fecop_b: "FECOP (B) — R$",
+                icms_sem_fecop_c: "ICMS sem FECOP (C) — R$",
+                icms_liquido_tesouro_d: "ICMS líquido Tesouro (D) — R$"
             };
 
             function escaparHtml(valor) {
@@ -516,13 +573,12 @@ def playground():
                 document.getElementById("resultado").style.display = "none";
 
                 try {
-                    const parser = document.getElementById("parserSelect").value;
                     const response = await fetch("/ask", {
                         method: "POST",
                         headers: {
                             "Content-Type": "application/json"
                         },
-                        body: JSON.stringify({ question, parser })
+                        body: JSON.stringify({ question })
                     });
 
                     if (!response.ok) {
@@ -532,31 +588,16 @@ def playground():
 
                     const data = await response.json();
 
-                    const specs = data.interpretacoes || {};
-                    const erros = data.erros_interpretacao || {};
-                    document.getElementById("rulesQuery").textContent = specs.regras
-                        ? JSON.stringify(specs.regras, null, 2) : (erros.regras || "Indisponível");
-                    document.getElementById("llmQuery").textContent = specs.llm
-                        ? JSON.stringify(specs.llm, null, 2) : (erros.llm || "Indisponível");
-                    if (specs.regras && specs.llm) {
-                        const diferentes = Object.keys(specs.regras).filter(
-                            k => JSON.stringify(specs.regras[k]) !== JSON.stringify(specs.llm[k])
-                        );
-                        document.getElementById("comparisonText").textContent = diferentes.length
-                            ? "Campos divergentes: " + diferentes.join(", ")
-                            : "As duas interpretações são idênticas.";
-                    } else {
-                        document.getElementById("comparisonText").textContent = "Comparação incompleta: um dos parsers está indisponível.";
-                    }
                     if (data.error) {
                         document.getElementById("resultado").style.display = "block";
                         document.getElementById("questionText").textContent = data.question || "";
                         document.getElementById("interpretedQuery").textContent = "Nenhuma consulta executada.";
                         document.getElementById("sqlText").textContent = "SQL não executado.";
-                        document.getElementById("summaryText").textContent = "Parser selecionado indisponível.";
+                        document.getElementById("summaryText").textContent = "Interpretação por LLM indisponível.";
                         document.getElementById("rawData").textContent = "[]";
                         document.getElementById("tableContainer").textContent = "";
                         Plotly.purge("chart");
+                        document.getElementById("chartsContainer").replaceChildren();
                         mostrarErro(data.error);
                         return;
                     }
@@ -573,11 +614,36 @@ def playground():
 
                     renderizarTabela(data.dados_tabela || data.dados_brutos || []);
                     
-                    Plotly.newPlot(
-                        "chart",
-                        data.plotly_json.data || [],
-                        data.plotly_json.layout || {}
-                    );
+                    const grade = document.getElementById("chartsContainer");
+                    grade.replaceChildren();
+                    const multiplo = Array.isArray(data.plotly_charts) && data.plotly_charts.length > 0;
+                    grade.style.display = multiplo ? "grid" : "none";
+                    document.getElementById("chart").style.display = multiplo ? "none" : "block";
+                    if (multiplo) {
+                        Plotly.purge("chart");
+                        for (const grafico of data.plotly_charts) {
+                            const painel = document.createElement("div");
+                            painel.className = "chart-panel";
+                            grade.appendChild(painel);
+                            // Cada figura deve ocupar somente a largura de sua célula.
+                            // Evita que um gráfico Plotly invada/recorte o gráfico vizinho.
+                            const larguraPainel = Math.floor(painel.getBoundingClientRect().width);
+                            const layoutPainel = {
+                                ...(grafico.layout || {}),
+                                autosize: false,
+                                width: larguraPainel
+                            };
+                            await Plotly.newPlot(
+                                painel,
+                                grafico.data || [],
+                                layoutPainel,
+                                {responsive: true, displaylogo: false}
+                            );
+                        }
+                    } else {
+                        await Plotly.newPlot("chart", data.plotly_json.data || [],
+                            data.plotly_json.layout || {}, {responsive: true});
+                    }
 
                 } catch (error) {
                     mostrarErro(
