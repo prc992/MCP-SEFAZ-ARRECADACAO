@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.responses import HTMLResponse
 from schemas import QuerySpec, AskRequest
 from query_engine import executar_query
@@ -153,32 +153,33 @@ class FeedbackRequest(BaseModel):
 
 
 @app.post("/feedback")
-def feedback(req: FeedbackRequest):
+def feedback(req: FeedbackRequest, request: Request):
     if not registrar_feedback(session_id=req.session_id,
-                              interaction_id=req.interaction_id, voto=req.vote):
+                              interaction_id=req.interaction_id, voto=req.vote,
+                              client_ip=request.client.host if request.client else None):
         raise HTTPException(status_code=404, detail="Interação não encontrada para esta sessão.")
     return {"ok": True, "vote": req.vote}
 
 
-def _finalizar_interacao(*, resposta, pergunta, sessao, interacao, parent, tipo, inicio, origem=None):
+def _finalizar_interacao(*, resposta, pergunta, sessao, interacao, parent, tipo, inicio, client_ip=None, origem=None):
     resposta["session_id"] = sessao
     resposta["interaction_id"] = interacao
     registrar_interacao(session_id=sessao, interaction_id=interacao,
                         parent_interaction_id=parent, tipo=tipo, pergunta=pergunta,
                         resposta=resposta, duracao_ms=(time.perf_counter()-inicio)*1000,
-                        origem=origem)
+                        origem=origem, client_ip=client_ip)
     return resposta
 
 
 @app.post("/ask")
-def ask(req: AskRequest, x_session_id: str | None = Header(default=None)):
+def ask(req: AskRequest, request: Request, x_session_id: str | None = Header(default=None)):
     inicio = time.perf_counter()
     sessao = validar_id(x_session_id) or novo_id()
     interacao = novo_id()
     def finalizar(resposta):
         return _finalizar_interacao(resposta=resposta, pergunta=req.question,
             sessao=sessao, interacao=interacao, parent=None, tipo="initial", inicio=inicio,
-            origem="llm_query")
+            origem="llm_query", client_ip=request.client.host if request.client else None)
     try:
         spec = interpretar_pergunta_llm(req.question)
     except Exception as exc:
@@ -218,7 +219,7 @@ def ask(req: AskRequest, x_session_id: str | None = Header(default=None)):
 
 
 @app.post("/chat")
-def chat(req: ChatRequest, x_session_id: str | None = Header(default=None),
+def chat(req: ChatRequest, request: Request, x_session_id: str | None = Header(default=None),
          x_parent_interaction_id: str | None = Header(default=None)):
     inicio = time.perf_counter()
     sessao = validar_id(x_session_id) or novo_id()
@@ -228,7 +229,7 @@ def chat(req: ChatRequest, x_session_id: str | None = Header(default=None),
     def finalizar(resposta):
         return _finalizar_interacao(resposta=resposta, pergunta=req.question,
             sessao=sessao, interacao=interacao, parent=parent, tipo="followup", inicio=inicio,
-            origem=origem)
+            origem=origem, client_ip=request.client.host if request.client else None)
     try:
         decisao = decidir_continuacao(req)
     except Exception as exc:

@@ -46,13 +46,15 @@ def _append(registro: dict) -> None:
 
 def registrar_interacao(*, session_id: str, interaction_id: str,
                        parent_interaction_id: str | None, tipo: str, pergunta: str,
-                       resposta: dict, duracao_ms: float, origem: str | None = None) -> None:
+                       resposta: dict, duracao_ms: float, origem: str | None = None,
+                       client_ip: str | None = None) -> None:
     try:
         spec = resposta.get('query_interpretada')
         sql = resposta.get('sql')
         mensagem = resposta.get('answer') or resposta.get('summary') or resposta.get('error') or ''
         registro = {
             'event_type': 'interaction', 'session_id': session_id,
+            'client_ip': client_ip,
             'interaction_id': interaction_id,
             'parent_interaction_id': parent_interaction_id,
             'interaction_type': tipo, 'question': pergunta,
@@ -92,7 +94,8 @@ def _interacao_existe(session_id: str, interaction_id: str) -> bool:
     return False
 
 
-def registrar_feedback(*, session_id: str, interaction_id: str, voto: str) -> bool:
+def registrar_feedback(*, session_id: str, interaction_id: str, voto: str,
+                       client_ip: str | None = None) -> bool:
     if voto not in ('positive', 'negative'):
         raise ValueError('Feedback inválido')
     if not validar_id(session_id) or not validar_id(interaction_id):
@@ -100,17 +103,18 @@ def registrar_feedback(*, session_id: str, interaction_id: str, voto: str) -> bo
     with _LOCK:
         if not _interacao_existe(session_id, interaction_id):
             return False
-        _append_sem_lock_feedback(session_id, interaction_id, voto)
+        _append_sem_lock_feedback(session_id, interaction_id, voto, client_ip)
     return True
 
 
-def _append_sem_lock_feedback(session_id, interaction_id, voto):
+def _append_sem_lock_feedback(session_id, interaction_id, voto, client_ip):
     # Evita lock recursivo durante a verificação e o append.
     BASE.mkdir(mode=0o700, parents=True, exist_ok=True)
     agora = datetime.now(timezone.utc).astimezone()
     caminho = BASE / f'interacoes_{agora:%Y-%m-%d}.jsonl'
     evento = {'timestamp': agora.isoformat(timespec='milliseconds'),
               'event_type': 'feedback', 'session_id': session_id,
-              'interaction_id': interaction_id, 'vote': voto}
+              'interaction_id': interaction_id, 'vote': voto,
+              'client_ip': client_ip}
     with caminho.open('a', encoding='utf-8') as arquivo:
         arquivo.write(json.dumps(evento, ensure_ascii=False) + '\n')
