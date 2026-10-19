@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from schemas import QuerySpec, AskRequest
 from query_engine import executar_query
@@ -6,6 +6,8 @@ from chart_engine import gerar_plotly_figure, gerar_graficos_icms_fecop
 from metadata_service import get_metadata
 from ask_service import gerar_summary
 from llm_service import interpretar_pergunta_llm
+from data_availability_service import validar_disponibilidade
+from chat_service import ChatRequest, decidir_continuacao
 
 app = FastAPI()
 
@@ -96,6 +98,12 @@ def metadata():
 
 @app.post("/grafico")
 def gerar_grafico(spec: QuerySpec):
+    try:
+        disponibilidade = validar_disponibilidade(spec)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Não foi possível verificar a disponibilidade dos dados no Redshift.") from exc
+    if not disponibilidade["disponivel"]:
+        raise HTTPException(status_code=422, detail=disponibilidade["mensagem"])
     query_result = executar_query(spec)
     dados = query_result["dados"]
     sql = query_result["sql"]
@@ -114,6 +122,12 @@ def gerar_grafico(spec: QuerySpec):
 
 @app.post("/grafico-html", response_class=HTMLResponse)
 def gerar_grafico_html(spec: QuerySpec):
+    try:
+        disponibilidade = validar_disponibilidade(spec)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Não foi possível verificar a disponibilidade dos dados no Redshift.") from exc
+    if not disponibilidade["disponivel"]:
+        raise HTTPException(status_code=422, detail=disponibilidade["mensagem"])
     query_result = executar_query(spec)
     dados = query_result["dados"]
     sql = query_result["sql"]
@@ -130,11 +144,7 @@ def gerar_grafico_html(spec: QuerySpec):
 
 @app.post("/ask")
 def ask(req: AskRequest):
-    """Interpreta perguntas exclusivamente com a LLM.
-
-    O campo legado `parser` do AskRequest é ignorado para compatibilidade
-    com eventuais clientes que ainda o enviem.
-    """
+    """Interpreta perguntas exclusivamente com a LLM."""
     try:
         spec = interpretar_pergunta_llm(req.question)
     except Exception as exc:
@@ -146,6 +156,24 @@ def ask(req: AskRequest):
             "erros_interpretacao": {"llm": type(exc).__name__}
         }
 
+    try:
+        disponibilidade = validar_disponibilidade(spec)
+    except Exception as exc:
+        return {
+            "question": req.question,
+            "query_interpretada": spec.model_dump(),
+            "error": "Não foi possível verificar a disponibilidade dos dados no Redshift. Tente novamente.",
+            "error_type": "availability_check_failed"
+        }
+    if not disponibilidade["disponivel"]:
+        return {
+            "question": req.question,
+            "query_interpretada": spec.model_dump(),
+            "error": disponibilidade["mensagem"],
+            "error_type": "period_unavailable",
+            "meses_ausentes": disponibilidade["meses_ausentes"]
+        }
+
     query_result = executar_query(spec)
     dados = query_result["dados"]
     sql = query_result["sql"]
@@ -153,11 +181,9 @@ def ask(req: AskRequest):
 
     return {
         "question": req.question,
-        "parser_executado": "llm",
-        "interpretacoes": {"llm": spec.model_dump()},
-        "erros_interpretacao": {},
         "query_interpretada": spec.model_dump(),
         "summary": resumo_relatorio(spec),
+        "aviso_disponibilidade": disponibilidade.get("aviso"),
         "sql": sql,
         "title": f"{spec.metric} por {spec.group_by}",
         "chart_type": spec.chart_type,
@@ -165,6 +191,49 @@ def ask(req: AskRequest):
         "dados_tabela": preparar_dados_tabela(dados, spec),
         "plotly_json": plotly_json,
         "plotly_charts": plotly_charts
+    }
+
+
+@app.post("/chat")
+def chat(req: ChatRequest):
+    """Continua a análise: responde com dados exibidos ou cria uma nova consulta."""
+    try:
+        decisao = decidir_continuacao(req)
+    except Exception as exc:
+        return {"action": "error", "error":
+                f"Não foi possível interpretar a continuação ({type(exc).__name__})."}
+
+    if decisao.action == "answer":
+        return {"action": "answer", "answer": decisao.answer}
+
+    spec = decisao.query_spec
+    try:
+        disponibilidade = validar_disponibilidade(spec)
+    except Exception:
+        return {"action": "error", "error":
+                "Não foi possível consultar a disponibilidade dos dados no Redshift."}
+    if not disponibilidade["disponivel"]:
+        return {"action": "error", "error": disponibilidade["mensagem"],
+                "query_interpretada": spec.model_dump()}
+
+    try:
+        resultado = executar_query(spec)
+        dados = resultado["dados"]
+        plotly_json, plotly_charts = preparar_graficos(dados, spec)
+    except Exception as exc:
+        return {"action": "error", "error":
+                f"Falha ao executar a nova consulta ({type(exc).__name__})."}
+    return {
+        "action": "query",
+        "answer": "Atualizei a consulta, a tabela e os gráficos conforme solicitado.",
+        "query_interpretada": spec.model_dump(),
+        "summary": resumo_relatorio(spec),
+        "aviso_disponibilidade": disponibilidade.get("aviso"),
+        "sql": resultado["sql"],
+        "dados_brutos": dados,
+        "dados_tabela": preparar_dados_tabela(dados, spec),
+        "plotly_json": plotly_json,
+        "plotly_charts": plotly_charts,
     }
 
 
@@ -259,6 +328,17 @@ def playground():
                 .charts-grid { grid-template-columns: minmax(0, 1fr); }
             }
 
+
+            .chat-input-row { display:flex; gap:10px; align-items:center; }
+            .chat-input-row input { flex:1; min-width:0; box-sizing:border-box;
+                border:1px solid #d1d5db; border-radius:8px; padding:11px; font-size:15px; }
+            .chat-input-row button { margin-top:0; }
+            #chatMessages { display:flex; flex-direction:column; gap:10px; margin:12px 0; }
+            .chat-message { padding:11px 14px; border-radius:9px; white-space:pre-wrap;
+                overflow-wrap:anywhere; max-width:90%; }
+            .chat-user { background:#e8edf5; align-self:flex-end; }
+            .chat-assistant { background:#f3f4f6; align-self:flex-start; }
+            .chat-error { background:#fef2f2; color:#991b1b; align-self:flex-start; }
             .muted {
                 color: #666;
                 font-size: 14px;
@@ -446,6 +526,17 @@ def playground():
                     <div id="chartsContainer" class="charts-grid" style="display:none;"></div>
                     <div id="chart"></div>
                 </div>
+                <div class="section">
+                    <div class="label">Continue conversando com os dados</div>
+                    <p class="muted">Pergunte sobre o resultado ou solicite outra comparação, filtro ou gráfico.</p>
+                    <div id="chatMessages" aria-live="polite"></div>
+                    <div class="chat-input-row">
+                        <input id="chatQuestion" type="text"
+                            placeholder="Ex.: qual decêndio cresceu mais? Ou compare com o mês anterior"
+                            onkeydown="if(event.key==='Enter') enviarContinuacao();" />
+                        <button id="chatSend" onclick="enviarContinuacao()">Enviar</button>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -560,56 +651,25 @@ def playground():
                 container.innerHTML = html;
             }
 
-            async function enviarPergunta() {
-                const question = document.getElementById("questionInput").value.trim();
+            let conversaAtual = null;
+            let historicoChat = [];
 
-                if (!question) {
-                    mostrarErro("Digite uma pergunta primeiro.");
-                    return;
-                }
+            function adicionarMensagem(texto, classe) {
+                const painel = document.getElementById("chatMessages");
+                const mensagem = document.createElement("div");
+                mensagem.className = "chat-message " + classe;
+                mensagem.textContent = texto;
+                painel.appendChild(mensagem);
+                mensagem.scrollIntoView({behavior:"smooth", block:"nearest"});
+            }
 
-                esconderErro();
-                mostrarLoading();
-                document.getElementById("resultado").style.display = "none";
-
-                try {
-                    const response = await fetch("/ask", {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json"
-                        },
-                        body: JSON.stringify({ question })
-                    });
-
-                    if (!response.ok) {
-                        const errorText = await response.text();
-                        throw new Error("Falha na API: " + errorText);
-                    }
-
-                    const data = await response.json();
-
-                    if (data.error) {
-                        document.getElementById("resultado").style.display = "block";
-                        document.getElementById("questionText").textContent = data.question || "";
-                        document.getElementById("interpretedQuery").textContent = "Nenhuma consulta executada.";
-                        document.getElementById("sqlText").textContent = "SQL não executado.";
-                        document.getElementById("summaryText").textContent = "Interpretação por LLM indisponível.";
-                        document.getElementById("rawData").textContent = "[]";
-                        document.getElementById("tableContainer").textContent = "";
-                        Plotly.purge("chart");
-                        document.getElementById("chartsContainer").replaceChildren();
-                        mostrarErro(data.error);
-                        return;
-                    }
-                    if (!data.query_interpretada || !data.plotly_json) {
-                        throw new Error("Não foi possível interpretar a pergunta com os dados esperados.");
-                    }
-
+            async function atualizarRelatorio(data) {
                     document.getElementById("resultado").style.display = "block";
-                    document.getElementById("questionText").textContent = data.question || "";
+                    document.getElementById("questionText").textContent = data.question || document.getElementById("questionText").textContent;
                     document.getElementById("interpretedQuery").textContent = JSON.stringify(data.query_interpretada, null, 2);
                     document.getElementById("sqlText").textContent = data.sql || "SQL não disponível.";
-                    document.getElementById("summaryText").textContent = data.summary || "Sem resumo disponível.";
+                    document.getElementById("summaryText").textContent = (data.summary || "Sem resumo disponível.")
+                        + (data.aviso_disponibilidade ? " " + data.aviso_disponibilidade : "");
                     document.getElementById("rawData").textContent = JSON.stringify(data.dados_brutos || [], null, 2);
 
                     renderizarTabela(data.dados_tabela || data.dados_brutos || []);
@@ -645,10 +705,114 @@ def playground():
                             data.plotly_json.layout || {}, {responsive: true});
                     }
 
+            }
+
+            async function enviarContinuacao() {
+                const caixa = document.getElementById("chatQuestion");
+                const pergunta = caixa.value.trim();
+                if (!pergunta || !conversaAtual) return;
+                caixa.value = "";
+                adicionarMensagem(pergunta, "chat-user");
+                const botao = document.getElementById("chatSend");
+                botao.disabled = true;
+                botao.textContent = "Analisando...";
+                try {
+                    const resposta = await fetch("/chat", {
+                        method:"POST", headers:{"Content-Type":"application/json"},
+                        body:JSON.stringify({
+                            question:pergunta,
+                            previous_spec:conversaAtual.query_interpretada,
+                            previous_data:(conversaAtual.dados_brutos || []).slice(0, 101),
+                            history:historicoChat.slice(-8)
+                        })
+                    });
+                    if (!resposta.ok) throw new Error("Falha HTTP " + resposta.status);
+                    const dados = await resposta.json();
+                    if (dados.action === "error") {
+                        adicionarMensagem(dados.error || "Não foi possível continuar.", "chat-error");
+                        return;
+                    }
+                    if (dados.action === "query") {
+                        if (!dados.plotly_json) throw new Error("Nova consulta não retornou gráfico.");
+                        dados.question = pergunta;
+                        await atualizarRelatorio(dados);
+                        conversaAtual = dados;
+                        adicionarMensagem(dados.answer || "Consulta atualizada.", "chat-assistant");
+                    } else if (dados.action === "answer") {
+                        adicionarMensagem(dados.answer, "chat-assistant");
+                    } else {
+                        throw new Error("Resposta inesperada.");
+                    }
+                    historicoChat.push({user:pergunta, assistant:dados.answer || "Nova análise gerada."});
+                    historicoChat = historicoChat.slice(-8);
+                } catch (erro) {
+                    adicionarMensagem("Erro ao continuar: " + erro.message, "chat-error");
+                } finally {
+                    botao.disabled = false;
+                    botao.textContent = "Enviar";
+                }
+            }
+
+            async function enviarPergunta() {
+                const question = document.getElementById("questionInput").value.trim();
+
+                if (!question) {
+                    mostrarErro("Digite uma pergunta primeiro.");
+                    return;
+                }
+
+                esconderErro();
+                conversaAtual = null;
+                mostrarLoading();
+                document.getElementById("resultado").style.display = "none";
+
+                try {
+                    const response = await fetch("/ask", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json"
+                        },
+                        body: JSON.stringify({ question })
+                    });
+
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        throw new Error("Falha na API: " + errorText);
+                    }
+
+                    const data = await response.json();
+
+                    if (data.error) {
+                        document.getElementById("resultado").style.display = "block";
+                        document.getElementById("questionText").textContent = data.question || "";
+                        document.getElementById("interpretedQuery").textContent = data.query_interpretada
+                            ? JSON.stringify(data.query_interpretada, null, 2)
+                            : "Nenhuma consulta executada.";
+                        document.getElementById("sqlText").textContent = "SQL não executado.";
+                        document.getElementById("summaryText").textContent = data.error_type === "period_unavailable"
+                            ? "Consulta não executada: período sem dados disponíveis."
+                            : "Não foi possível executar a consulta.";
+                        document.getElementById("rawData").textContent = "[]";
+                        document.getElementById("tableContainer").textContent = "";
+                        Plotly.purge("chart");
+                        document.getElementById("chartsContainer").replaceChildren();
+                        mostrarErro(data.error);
+                        return;
+                    }
+                    if (!data.query_interpretada || !data.plotly_json) {
+                        throw new Error("Não foi possível interpretar a pergunta com os dados esperados.");
+                    }
+
+                    conversaAtual = data;
+                    historicoChat = [];
+                    document.getElementById("chatMessages").replaceChildren();
+                    await atualizarRelatorio(data);
+                    adicionarMensagem("Resultado carregado. Você pode fazer perguntas ou pedir outra análise.", "chat-assistant");
+
                 } catch (error) {
                     mostrarErro(
                         "Não consegui interpretar ou processar sua pergunta. " +
-                        "Tente reformular usando termos como 'valor arrecadado', 'documentos', 'município', 'mês', 'Fortaleza' ou 'Caucaia'. " +
+                        "Verifique a pergunta e tente novamente. " +
                         "Detalhe técnico: " + error.message
                     );
                 } finally {
