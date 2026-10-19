@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import HTMLResponse
 from schemas import QuerySpec, AskRequest
 from query_engine import executar_query
@@ -8,6 +8,10 @@ from ask_service import gerar_summary
 from llm_service import interpretar_pergunta_llm
 from data_availability_service import validar_disponibilidade
 from chat_service import ChatRequest, decidir_continuacao
+from interaction_logger import novo_id, validar_id, registrar_interacao, registrar_feedback
+from pydantic import BaseModel
+from typing import Literal
+import time
 
 app = FastAPI()
 
@@ -142,99 +146,124 @@ def gerar_grafico_html(spec: QuerySpec):
     return HTMLResponse(content=fig.to_html(full_html=True))
 
 
+class FeedbackRequest(BaseModel):
+    session_id: str
+    interaction_id: str
+    vote: Literal["positive", "negative"]
+
+
+@app.post("/feedback")
+def feedback(req: FeedbackRequest):
+    if not registrar_feedback(session_id=req.session_id,
+                              interaction_id=req.interaction_id, voto=req.vote):
+        raise HTTPException(status_code=404, detail="Interação não encontrada para esta sessão.")
+    return {"ok": True, "vote": req.vote}
+
+
+def _finalizar_interacao(*, resposta, pergunta, sessao, interacao, parent, tipo, inicio, origem=None):
+    resposta["session_id"] = sessao
+    resposta["interaction_id"] = interacao
+    registrar_interacao(session_id=sessao, interaction_id=interacao,
+                        parent_interaction_id=parent, tipo=tipo, pergunta=pergunta,
+                        resposta=resposta, duracao_ms=(time.perf_counter()-inicio)*1000,
+                        origem=origem)
+    return resposta
+
+
 @app.post("/ask")
-def ask(req: AskRequest):
-    """Interpreta perguntas exclusivamente com a LLM."""
+def ask(req: AskRequest, x_session_id: str | None = Header(default=None)):
+    inicio = time.perf_counter()
+    sessao = validar_id(x_session_id) or novo_id()
+    interacao = novo_id()
+    def finalizar(resposta):
+        return _finalizar_interacao(resposta=resposta, pergunta=req.question,
+            sessao=sessao, interacao=interacao, parent=None, tipo="initial", inicio=inicio,
+            origem="llm_query")
     try:
         spec = interpretar_pergunta_llm(req.question)
     except Exception as exc:
-        return {
-            "question": req.question,
-            "error": (f"Falha na interpretação por LLM ({type(exc).__name__}). "
-                      "Verifique a configuração, a conectividade e os logs."),
-            "interpretacoes": {},
-            "erros_interpretacao": {"llm": type(exc).__name__}
-        }
-
-    try:
-        disponibilidade = validar_disponibilidade(spec)
-    except Exception as exc:
-        return {
-            "question": req.question,
-            "query_interpretada": spec.model_dump(),
-            "error": "Não foi possível verificar a disponibilidade dos dados no Redshift. Tente novamente.",
-            "error_type": "availability_check_failed"
-        }
-    if not disponibilidade["disponivel"]:
-        return {
-            "question": req.question,
-            "query_interpretada": spec.model_dump(),
-            "error": disponibilidade["mensagem"],
-            "error_type": "period_unavailable",
-            "meses_ausentes": disponibilidade["meses_ausentes"]
-        }
-
-    query_result = executar_query(spec)
-    dados = query_result["dados"]
-    sql = query_result["sql"]
-    plotly_json, plotly_charts = preparar_graficos(dados, spec)
-
-    return {
-        "question": req.question,
-        "query_interpretada": spec.model_dump(),
-        "summary": resumo_relatorio(spec),
-        "aviso_disponibilidade": disponibilidade.get("aviso"),
-        "sql": sql,
-        "title": f"{spec.metric} por {spec.group_by}",
-        "chart_type": spec.chart_type,
-        "dados_brutos": dados,
-        "dados_tabela": preparar_dados_tabela(dados, spec),
-        "plotly_json": plotly_json,
-        "plotly_charts": plotly_charts
-    }
-
-
-@app.post("/chat")
-def chat(req: ChatRequest):
-    """Continua a análise: responde com dados exibidos ou cria uma nova consulta."""
-    try:
-        decisao = decidir_continuacao(req)
-    except Exception as exc:
-        return {"action": "error", "error":
-                f"Não foi possível interpretar a continuação ({type(exc).__name__})."}
-
-    if decisao.action == "answer":
-        return {"action": "answer", "answer": decisao.answer}
-
-    spec = decisao.query_spec
+        return finalizar({"question": req.question,
+            "error": f"Falha na interpretação por LLM ({type(exc).__name__}).",
+            "error_type": "llm_failed"})
     try:
         disponibilidade = validar_disponibilidade(spec)
     except Exception:
-        return {"action": "error", "error":
-                "Não foi possível consultar a disponibilidade dos dados no Redshift."}
+        return finalizar({"question": req.question,
+            "query_interpretada": spec.model_dump(),
+            "error": "Não foi possível verificar a disponibilidade dos dados no Redshift.",
+            "error_type": "availability_check_failed"})
     if not disponibilidade["disponivel"]:
-        return {"action": "error", "error": disponibilidade["mensagem"],
-                "query_interpretada": spec.model_dump()}
+        return finalizar({"question": req.question,
+            "query_interpretada": spec.model_dump(),
+            "error": disponibilidade["mensagem"], "error_type": "period_unavailable",
+            "meses_ausentes": disponibilidade.get("meses_ausentes", [])})
+    try:
+        query_result = executar_query(spec)
+        dados = query_result["dados"]
+        plotly_json, plotly_charts = preparar_graficos(dados, spec)
+        return finalizar({
+            "question": req.question,
+            "query_interpretada": spec.model_dump(),
+            "summary": resumo_relatorio(spec),
+            "aviso_disponibilidade": disponibilidade.get("aviso"),
+            "sql": query_result["sql"], "title": f"{spec.metric} por {spec.group_by}",
+            "chart_type": spec.chart_type, "dados_brutos": dados,
+            "dados_tabela": preparar_dados_tabela(dados, spec),
+            "plotly_json": plotly_json, "plotly_charts": plotly_charts
+        })
+    except Exception as exc:
+        return finalizar({"question": req.question, "query_interpretada": spec.model_dump(),
+                         "error": "Falha durante a execução da consulta.",
+                         "error_type": type(exc).__name__})
 
+
+@app.post("/chat")
+def chat(req: ChatRequest, x_session_id: str | None = Header(default=None),
+         x_parent_interaction_id: str | None = Header(default=None)):
+    inicio = time.perf_counter()
+    sessao = validar_id(x_session_id) or novo_id()
+    interacao = novo_id()
+    parent = validar_id(x_parent_interaction_id)
+    origem = None
+    def finalizar(resposta):
+        return _finalizar_interacao(resposta=resposta, pergunta=req.question,
+            sessao=sessao, interacao=interacao, parent=parent, tipo="followup", inicio=inicio,
+            origem=origem)
+    try:
+        decisao = decidir_continuacao(req)
+    except Exception as exc:
+        return finalizar({"action": "error", "error":
+                 f"Não foi possível interpretar a continuação ({type(exc).__name__})."})
+    if decisao.action == "answer":
+        # Respostas determinísticas e respostas livres não devem ser confundidas no log.
+        from chat_service import _op
+        origem = "deterministic" if _op(req) is not None else "llm"
+        return finalizar({"action": "answer", "answer": decisao.answer,
+                         "query_interpretada": req.previous_spec.model_dump()})
+    spec = decisao.query_spec
+    origem = "llm_query"
+    try:
+        disponibilidade = validar_disponibilidade(spec)
+    except Exception:
+        return finalizar({"action": "error", "error":
+                "Não foi possível consultar a disponibilidade dos dados no Redshift."})
+    if not disponibilidade["disponivel"]:
+        return finalizar({"action": "error", "error": disponibilidade["mensagem"],
+                 "query_interpretada": spec.model_dump(), "error_type": "period_unavailable"})
     try:
         resultado = executar_query(spec)
         dados = resultado["dados"]
         plotly_json, plotly_charts = preparar_graficos(dados, spec)
     except Exception as exc:
-        return {"action": "error", "error":
-                f"Falha ao executar a nova consulta ({type(exc).__name__})."}
-    return {
-        "action": "query",
-        "answer": "Atualizei a consulta, a tabela e os gráficos conforme solicitado.",
-        "query_interpretada": spec.model_dump(),
-        "summary": resumo_relatorio(spec),
-        "aviso_disponibilidade": disponibilidade.get("aviso"),
-        "sql": resultado["sql"],
-        "dados_brutos": dados,
-        "dados_tabela": preparar_dados_tabela(dados, spec),
-        "plotly_json": plotly_json,
-        "plotly_charts": plotly_charts,
-    }
+        return finalizar({"action": "error", "error":
+                 f"Falha ao executar a nova consulta ({type(exc).__name__})."})
+    return finalizar({
+        "action": "query", "answer": "Atualizei a consulta, a tabela e os gráficos conforme solicitado.",
+        "query_interpretada": spec.model_dump(), "summary": resumo_relatorio(spec),
+        "aviso_disponibilidade": disponibilidade.get("aviso"), "sql": resultado["sql"],
+        "dados_brutos": dados, "dados_tabela": preparar_dados_tabela(dados, spec),
+        "plotly_json": plotly_json, "plotly_charts": plotly_charts,
+    })
 
 
 @app.get("/playground", response_class=HTMLResponse)
@@ -339,6 +368,29 @@ def playground():
             .chat-user { background:#e8edf5; align-self:flex-end; }
             .chat-assistant { background:#f3f4f6; align-self:flex-start; }
             .chat-error { background:#fef2f2; color:#991b1b; align-self:flex-start; }
+            .feedback-row { display:flex; gap:8px; align-items:center; margin-top:6px; }
+            .feedback-button { margin:0; padding:5px 9px; background:transparent;
+                color:#4b5563; border:1px solid #d1d5db; border-radius:7px; font-size:16px; }
+            .feedback-button:hover { background:#e5e7eb; }
+            .feedback-button.selected { background:#dbeafe; color:#1e40af; border-color:#93c5fd; }
+            .feedback-button:disabled { opacity:.6; cursor:wait; }
+            .feedback-note { color:#6b7280; font-size:12px; }
+            .chat-assistant-wrapper { align-self:flex-start; max-width:90%; }
+            .chat-assistant-wrapper .chat-message { max-width:100%; }
+            #initialFeedback.feedback-inicial {
+                margin-top:22px; padding:15px 18px; gap:12px; flex-wrap:wrap;
+                border:1px solid #cbd5e1; border-radius:10px; background:#f1f5f9;
+            }
+            #initialFeedback.feedback-inicial:empty { display:none; }
+            #initialFeedback.feedback-inicial .feedback-note {
+                font-size:15px; font-weight:600; color:#1f2937;
+            }
+            #initialFeedback.feedback-inicial .feedback-button {
+                padding:9px 14px; font-size:20px; background:#fff;
+            }
+            #initialFeedback.feedback-inicial .feedback-button.selected {
+                background:#dbeafe; color:#1e40af;
+            }
             .muted {
                 color: #666;
                 font-size: 14px;
@@ -525,6 +577,7 @@ def playground():
                     <div class="label">Gráficos</div>
                     <div id="chartsContainer" class="charts-grid" style="display:none;"></div>
                     <div id="chart"></div>
+                    <div id="initialFeedback" class="feedback-row feedback-inicial" role="group" aria-label="Avaliação do relatório"></div>
                 </div>
                 <div class="section">
                     <div class="label">Continue conversando com os dados</div>
@@ -653,13 +706,72 @@ def playground():
 
             let conversaAtual = null;
             let historicoChat = [];
+            let sessaoId = (typeof crypto !== "undefined" && crypto.randomUUID)
+                ? crypto.randomUUID() : null;
+            let ultimaInteracaoId = null;
+            const votosLocais = {};
 
-            function adicionarMensagem(texto, classe) {
+            function criarFeedback(interactionId, container) {
+                container.replaceChildren();
+                if (!interactionId || !sessaoId) return;
+                const texto = document.createElement("span");
+                texto.className = "feedback-note";
+                texto.textContent = "Esta resposta foi útil?";
+                container.appendChild(texto);
+                const botoes = [];
+                for (const [voto, simbolo, rotulo] of [
+                    ["positive", "👍", "Útil"], ["negative", "👎", "Não útil"]]) {
+                    const botao = document.createElement("button");
+                    botao.type = "button";
+                    botao.className = "feedback-button";
+                    botao.textContent = simbolo;
+                    botao.title = rotulo;
+                    botao.setAttribute("aria-label", rotulo);
+                    botao.setAttribute("aria-pressed", votosLocais[interactionId] === voto ? "true" : "false");
+                    if (votosLocais[interactionId] === voto) botao.classList.add("selected");
+                    botao.onclick = async () => {
+                        botoes.forEach(b => b.disabled = true);
+                        try {
+                            const resposta = await fetch("/feedback", {
+                                method:"POST", headers:{"Content-Type":"application/json"},
+                                body:JSON.stringify({session_id:sessaoId,
+                                    interaction_id:interactionId, vote:voto})
+                            });
+                            if (!resposta.ok) throw new Error("HTTP " + resposta.status);
+                            votosLocais[interactionId] = voto;
+                            botoes.forEach(b => {
+                                const ativo = b.dataset.voto === voto;
+                                b.classList.toggle("selected", ativo);
+                                b.setAttribute("aria-pressed", ativo ? "true" : "false");
+                            });
+                            texto.textContent = "Feedback registrado. Obrigado.";
+                        } catch (erro) {
+                            texto.textContent = "Não foi possível registrar o feedback.";
+                        } finally { botoes.forEach(b => b.disabled = false); }
+                    };
+                    botao.dataset.voto = voto;
+                    botoes.push(botao);
+                    container.appendChild(botao);
+                }
+            }
+
+            function adicionarMensagem(texto, classe, interactionId=null) {
                 const painel = document.getElementById("chatMessages");
                 const mensagem = document.createElement("div");
                 mensagem.className = "chat-message " + classe;
                 mensagem.textContent = texto;
-                painel.appendChild(mensagem);
+                if (interactionId && (classe === "chat-assistant" || classe === "chat-error")) {
+                    const envelope = document.createElement("div");
+                    envelope.className = "chat-assistant-wrapper";
+                    envelope.appendChild(mensagem);
+                    const feedback = document.createElement("div");
+                    feedback.className = "feedback-row";
+                    criarFeedback(interactionId, feedback);
+                    envelope.appendChild(feedback);
+                    painel.appendChild(envelope);
+                } else {
+                    painel.appendChild(mensagem);
+                }
                 mensagem.scrollIntoView({behavior:"smooth", block:"nearest"});
             }
 
@@ -718,7 +830,9 @@ def playground():
                 botao.textContent = "Analisando...";
                 try {
                     const resposta = await fetch("/chat", {
-                        method:"POST", headers:{"Content-Type":"application/json"},
+                        method:"POST", headers:{"Content-Type":"application/json",
+                            "X-Session-ID": sessaoId || "",
+                            "X-Parent-Interaction-ID": ultimaInteracaoId || ""},
                         body:JSON.stringify({
                             question:pergunta,
                             previous_spec:conversaAtual.query_interpretada,
@@ -728,8 +842,10 @@ def playground():
                     });
                     if (!resposta.ok) throw new Error("Falha HTTP " + resposta.status);
                     const dados = await resposta.json();
+                    if (dados.session_id) sessaoId = dados.session_id;
+                    if (dados.interaction_id) ultimaInteracaoId = dados.interaction_id;
                     if (dados.action === "error") {
-                        adicionarMensagem(dados.error || "Não foi possível continuar.", "chat-error");
+                        adicionarMensagem(dados.error || "Não foi possível continuar.", "chat-error", dados.interaction_id);
                         return;
                     }
                     if (dados.action === "query") {
@@ -737,9 +853,9 @@ def playground():
                         dados.question = pergunta;
                         await atualizarRelatorio(dados);
                         conversaAtual = dados;
-                        adicionarMensagem(dados.answer || "Consulta atualizada.", "chat-assistant");
+                        adicionarMensagem(dados.answer || "Consulta atualizada.", "chat-assistant", dados.interaction_id);
                     } else if (dados.action === "answer") {
-                        adicionarMensagem(dados.answer, "chat-assistant");
+                        adicionarMensagem(dados.answer, "chat-assistant", dados.interaction_id);
                     } else {
                         throw new Error("Resposta inesperada.");
                     }
@@ -763,6 +879,8 @@ def playground():
 
                 esconderErro();
                 conversaAtual = null;
+                ultimaInteracaoId = null;
+                document.getElementById("initialFeedback").replaceChildren();
                 mostrarLoading();
                 document.getElementById("resultado").style.display = "none";
 
@@ -770,7 +888,8 @@ def playground():
                     const response = await fetch("/ask", {
                         method: "POST",
                         headers: {
-                            "Content-Type": "application/json"
+                            "Content-Type": "application/json",
+                            "X-Session-ID": sessaoId || ""
                         },
                         body: JSON.stringify({ question })
                     });
@@ -781,6 +900,8 @@ def playground():
                     }
 
                     const data = await response.json();
+                    if (data.session_id) sessaoId = data.session_id;
+                    if (data.interaction_id) ultimaInteracaoId = data.interaction_id;
 
                     if (data.error) {
                         document.getElementById("resultado").style.display = "block";
@@ -797,6 +918,9 @@ def playground():
                         Plotly.purge("chart");
                         document.getElementById("chartsContainer").replaceChildren();
                         mostrarErro(data.error);
+                        // Sem gráficos, reposiciona a avaliação após o resumo do erro.
+                        document.getElementById("summaryText").after(document.getElementById("initialFeedback"));
+                        criarFeedback(data.interaction_id, document.getElementById("initialFeedback"));
                         return;
                     }
                     if (!data.query_interpretada || !data.plotly_json) {
@@ -807,6 +931,8 @@ def playground():
                     historicoChat = [];
                     document.getElementById("chatMessages").replaceChildren();
                     await atualizarRelatorio(data);
+                    document.getElementById("chart").after(document.getElementById("initialFeedback"));
+                    criarFeedback(data.interaction_id, document.getElementById("initialFeedback"));
                     adicionarMensagem("Resultado carregado. Você pode fazer perguntas ou pedir outra análise.", "chat-assistant");
 
                 } catch (error) {

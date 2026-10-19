@@ -2,3 +2,5 @@
 __pycache__/
 *.pyc
 .env
+# Auditoria local de interações - nunca versionar os JSONL
+logs_interacoes/
