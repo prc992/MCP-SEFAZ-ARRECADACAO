@@ -1,7 +1,6 @@
-"""Contratos do processamento analítico determinístico (etapa 1).
+"""Contratos do processamento determinístico compartilhados pelas etapas 1 e 2.
 
-Neste estágio, o spec reflete as operações existentes; na etapa 2, um
-planejador semântico poderá produzi-lo sem alterar o motor de cálculo.
+O planner semântico produz um AnalysisSpec; só o engine calcula.
 """
 from decimal import Decimal
 from typing import Literal
@@ -19,7 +18,7 @@ AnalysisStatus = Literal[
     "ok", "too_many_rows", "metric_required", "invalid_data",
     "others_target_required", "category_required", "category_period_required",
     "comparison_period_required", "comparison_extreme_period_required",
-    "percent_reference_zero", "all_percent_references_zero", "unsupported",
+    "percent_reference_zero", "all_percent_references_zero", "category_not_found", "unsupported",
 ]
 
 

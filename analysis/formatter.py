@@ -28,8 +28,9 @@ def _br(v, percentual=False, inteiro=False):
 
 
 def _rotulo(valor):
-    m = re.fullmatch(r"([123]) Decêndio", str(valor))
-    return f"{m.group(1)}º decêndio" if m else str(valor).replace("_", "/")
+    texto = str(valor).strip()
+    m = re.fullmatch(r"([123]) Decêndio", texto)
+    return f"{m.group(1)}º decêndio" if m else texto.replace("_", "/")
 
 
 def format_analysis_result(result: AnalysisResult) -> str:
@@ -45,6 +46,8 @@ def format_analysis_result(result: AnalysisResult) -> str:
     if status == "invalid_data":
         return ("Não há dados numéricos completos para realizar esse cálculo com segurança. "
                 "Solicite uma consulta mais específica ou verifique se ambos os períodos possuem registros.")
+    if status == "category_not_found":
+        return "A categoria solicitada não está presente nos dados exibidos. Solicite uma nova consulta."
     if status == "others_target_required":
         return "Indique a categoria que deseja comparar com as demais, em uma consulta de período único."
     if status == "all_percent_references_zero":

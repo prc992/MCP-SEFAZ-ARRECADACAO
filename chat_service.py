@@ -1,11 +1,12 @@
-"""Motor conversacional: interpretação conservadora + delegação analítica.
+"""Motor conversacional: Etapa 2, interpretação semântica com migração segura.
 
-Etapa 1: mantém _op e o contrato público; engine e formatter são independentes
-        da LLM e podem ser reutilizados.
+Modo legacy: só regra antiga. Modo shadow: compara planejadores sem afetar o
+usuário. Modo active: planejamento semântico + motor determinístico validado.
 """
 from typing import Literal
 import json
 import os
+import logging
 import re
 import unicodedata
 
@@ -19,6 +20,11 @@ from analysis.engine import (
     metricas_disponiveis as _metricas_disponiveis,
 )
 from analysis.formatter import _br, _rotulo, format_analysis_result
+from analysis.planner import AnalysisPlanner, PlanningOutcome
+
+# Uvicorn já configura esse logger para exibir INFO no console da aplicação.
+# Sem isso, logs INFO de shadow podem desaparecer com o root logger em WARNING.
+logger = logging.getLogger("uvicorn.error")
 
 
 METRICAS = {
@@ -196,6 +202,8 @@ class ChatDecision(BaseModel):
     action: Literal['answer', 'query']
     answer: str | None = None
     query_spec: QuerySpec | None = None
+    # Informativo para logging, não altera action/answer/query_spec de /chat.
+    origin: Literal["deterministic", "llm", "llm_query"] | None = None
 
 
 class ChatRequest(BaseModel):
@@ -234,25 +242,93 @@ REGRAS ESSENCIAIS:
 """
 
 
-def decidir_continuacao(req: ChatRequest) -> ChatDecision:
+def _answer_semantic(req: ChatRequest, outcome: PlanningOutcome) -> str:
+    """Executa plano semântico em motor numérico; nunca retorna números da LLM."""
+    if outcome.action != "analyze" or outcome.spec is None:
+        raise ValueError("Planejamento não executável")
+    contexto = outcome.spec.model_copy(deep=True)
+    disponiveis = _metricas_disponiveis(
+        [r for r in req.previous_data if r.get("decendio") != "Total geral"],
+        req.previous_spec,
+    )
+    # Alias de indicadores servem APENAS como validação de segurança; a
+    # classificação principal da operação é semântica, não baseada em keywords.
+    indicada = _referente_metricas(req.question, set(METRICAS))
+    if indicada == "icms_a" and req.previous_spec.report_type == "standard":
+        indicada = "valor_arrecadado"
+    if indicada and indicada not in disponiveis:
+        return "O indicador solicitado não está disponível nos dados exibidos. Solicite uma nova consulta."
+    if contexto.metric is not None and indicada and contexto.metric != indicada:
+        return "O indicador interpretado não corresponde ao solicitado. Especifique o indicador desejado."
+    if contexto.metric is None:
+        # Migração incremental: conserva seleção contextual de métrica da etapa 1.
+        contexto.metric = _selecionar_metrica(req, disponiveis)
+    if contexto.metric is not None and contexto.metric not in disponiveis:
+        return "O indicador solicitado não está disponível nos dados exibidos. Solicite uma nova consulta."
+    result = AnalysisEngine().execute(contexto, req.previous_data)
+    return format_analysis_result(result)
+
+
+def _planner_mode():
+    modo = os.getenv("ANALYSIS_PLANNER_MODE", "legacy").strip().lower()
+    if modo not in ("legacy", "shadow", "active"):
+        logger.warning("ANALYSIS_PLANNER_MODE inválido: usando legacy")
+        return "legacy"
+    return modo
+
+
+def _plan_semantic(req: ChatRequest) -> PlanningOutcome:
+    return AnalysisPlanner(client_factory=_client).plan(req)
+
+
+def _shadow_compare(req: ChatRequest, outcome: PlanningOutcome) -> None:
+    """Observabilidade SEM transmitir linhas ou números ao log."""
+    legacy_op = _op(req)
+    semantic_op = outcome.spec.operation if outcome.spec else None
+    matches = None
+    if outcome.action == "analyze":
+        candidate = _answer_semantic(req, outcome)
+        legacy = _responder_deterministico(req)
+        matches = legacy == candidate if legacy is not None else None
+    logger.info(
+        "analysis_shadow legacy_op=%s semantic_action=%s semantic_op=%s "
+        "answer_matches=%s reason=%s",
+        legacy_op, outcome.action, semantic_op, matches, outcome.reason,
+    )
+
+
+def _decidir_legado(req: ChatRequest) -> ChatDecision:
     calculo = _responder_deterministico(req)
     if calculo is not None:
-        return ChatDecision(action="answer", answer=calculo)
+        return ChatDecision(action="answer", answer=calculo, origin="deterministic")
+    return _decidir_com_llm(req)
 
+
+def _decidir_com_llm(req: ChatRequest, *, require_query: bool = False,
+                    conceptual_only: bool = False) -> ChatDecision:
+    """Fluxo de QuerySpec/resposta interpretativa inalterado da etapa 1."""
     linhas = req.previous_data
     limite = 100
     truncado = len(linhas) > limite
     payload = {
         'pergunta_atual': req.question,
         'consulta_anterior': req.previous_spec.model_dump(),
-        'dados_atuais': linhas[:limite],
+        # Quando o plano é defer, a LLM conceitual não recebe números,
+        # linhas ou histórico numérico. Portanto, não pode refazer cálculos.
+        'dados_atuais': [] if (conceptual_only or require_query) else linhas[:limite],
         'dados_truncados': truncado,
-        'historico_recente': req.history[-8:],
+        'historico_recente': [] if conceptual_only else req.history[-8:],
     }
+    system_prompt = CHAT_PROMPT + '\n' + BUSINESS_METADATA
+    if conceptual_only:
+        system_prompt += ("\nNESTA CHAMADA, responda apenas explicações conceituais. "
+                          "NÃO calcule valores, percentuais, rankings ou comparações "
+                          "numéricas sobre os dados da tabela. Diante de necessidade de "
+                          "cálculo, não produza números; solicite esclarecimento.")
     resposta = _client().responses.parse(
         model=os.getenv('OPENAI_MODEL', 'gpt-4.1-mini'),
         input=[
-            {'role': 'system', 'content': CHAT_PROMPT + '\n' + BUSINESS_METADATA},
+            {'role': 'system', 'content': system_prompt},
             {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False, default=str)},
         ],
         text_format=ChatDecision,
@@ -263,16 +339,103 @@ def decidir_continuacao(req: ChatRequest) -> ChatDecision:
         raise ValueError('LLM não retornou decisão de continuação válida.')
     if decisao.action == 'query' and decisao.query_spec is None:
         raise ValueError('Nova consulta solicitada sem QuerySpec.')
+    if require_query and decisao.action != "query":
+        return ChatDecision(action="answer", answer=(
+            "Essa pergunta precisa de uma nova consulta para ser respondida com segurança. "
+            "Solicite os dados desejados novamente."), origin="deterministic")
+    if conceptual_only and decisao.action != 'answer':
+        return ChatDecision(action='answer', answer=(
+            "Você quer uma explicação conceitual ou deseja consultar outros dados?"),
+            origin='deterministic')
     if decisao.action == 'answer' and not decisao.answer:
         raise ValueError('Resposta sobre dados retornou vazia.')
-    if decisao.action == 'answer' and truncado:
+    if conceptual_only and decisao.action == 'answer' and re.search(
+        r"(?:R\$\s*[-+]?\d|\b\d[\d.,]*\s*%|\b\d[\d.,]*\b)", decisao.answer
+    ):
+        return ChatDecision(action='answer', answer=(
+            "A resposta envolve valores numéricos dos dados exibidos. "
+            "Qual operação ou categoria deseja analisar?"), origin="deterministic")
+    if not conceptual_only and decisao.action == 'answer' and truncado:
         return ChatDecision(
             action='answer',
             answer=('A tabela possui mais linhas do que o limite considerado nesta conversa. '
                     'Peça uma consulta mais específica para garantir uma análise completa.'),
+            origin="deterministic",
         )
-    if decisao.action == 'answer' and (_op(req) or _continuacao_percentual(req.question)):
+    if not conceptual_only and decisao.action == 'answer' and (_op(req) or _continuacao_percentual(req.question)):
         return ChatDecision(action='answer', answer=(
             'Não consegui calcular esse resultado com segurança usando os dados disponíveis. '
-            'Especifique o indicador e o período ou solicite uma nova consulta.'))
+            'Especifique o indicador e o período ou solicite uma nova consulta.'),
+            origin="deterministic")
+    decisao.origin = "llm_query" if decisao.action == "query" else "llm"
     return decisao
+
+
+def decidir_continuacao(req: ChatRequest) -> ChatDecision:
+    modo = _planner_mode()
+    if modo == "legacy":
+        return _decidir_legado(req)
+
+    try:
+        outcome = _plan_semantic(req)
+    except Exception as exc:
+        logger.warning("analysis_planner_failed mode=%s error_type=%s",
+                       modo, type(exc).__name__)
+        # Shadow continua sendo apenas observação do legado. Em active, uma
+        # falha do planejador NUNCA pode liberar resposta numérica da LLM.
+        if modo == "shadow":
+            return _decidir_legado(req)
+        return ChatDecision(action="answer", answer=(
+            "Não foi possível validar a interpretação desta pergunta. "
+            "Tente reformulá-la ou solicite uma nova consulta."), origin="deterministic")
+
+    logger.info("analysis_planner_decision mode=%s action=%s operation=%s reason=%s",
+                modo, outcome.action, outcome.spec.operation if outcome.spec else None, outcome.reason)
+
+    if modo == "shadow":
+        try:
+            _shadow_compare(req, outcome)
+        except Exception as exc:
+            logger.warning("analysis_shadow_compare_failed error_type=%s", type(exc).__name__)
+        return _decidir_legado(req)
+
+    if outcome.action == "analyze":
+        try:
+            logger.info("analysis_semantic_accepted operation=%s metric=%s",
+                        outcome.spec.operation, outcome.spec.metric)
+            return ChatDecision(action="answer", answer=_answer_semantic(req, outcome),
+                                origin="deterministic")
+        except Exception as exc:
+            # A validação e o motor NÃO devem ceder a cálculos livres da LLM.
+            logger.warning("analysis_semantic_execution_failed error_type=%s", type(exc).__name__)
+            return ChatDecision(action="answer", answer=(
+                "Não foi possível executar a operação sobre os dados exibidos com segurança. "
+                "Verifique o indicador e a categoria."), origin="deterministic")
+
+    if outcome.action == "clarify":
+        logger.info("analysis_clarification reason=%s", outcome.reason)
+        return ChatDecision(action="answer", answer=outcome.question or (
+            "Qual indicador, categoria ou período deseja analisar?"), origin="deterministic")
+
+    # Quando o plano é inválido, nunca usar valores livres da LLM.
+    if outcome.action == "invalid":
+        logger.warning("analysis_plan_invalid reason=%s", outcome.reason)
+        return ChatDecision(action="answer", answer=(
+            "A operação solicitada não foi validada para os dados exibidos. "
+            "Confira o indicador, a categoria ou solicite uma nova consulta."),
+            origin="deterministic")
+
+    # Se os dados estão truncados/ausentes, mantém a salvaguarda da Etapa 1
+    # antes de qualquer resposta de cálculo (sem chamar o AnalysisPlanner).
+    if outcome.action == "defer" and outcome.reason == "no_complete_context":
+        return _decidir_legado(req)
+
+    # Query identificada semanticamente nunca pode ser atendida como cálculo
+    # sobre o contexto anterior, mesmo que a regex antiga encontre "quanto".
+    if outcome.action == "query":
+        return _decidir_com_llm(req, require_query=True)
+
+    # Somente explicações conceituais chegam aqui, com bloqueio de números.
+    # Perguntas analíticas classificadas incorretamente como defer passam antes
+    # pela segunda tentativa do validador ou por esclarecimento explícito.
+    return _decidir_com_llm(req, conceptual_only=True)

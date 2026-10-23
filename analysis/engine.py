@@ -92,6 +92,10 @@ class AnalysisEngine:
         op = spec.operation
         comparacao = spec.analysis_type == "compare_periods"
         cat = spec.category
+        if cat is not None and cat not in matriz:
+            return result("category_not_found")
+        if spec.explicit_category is not None and spec.explicit_category not in matriz:
+            return result("category_not_found")
 
         # Conserva o disparador explícito da operação "outros" na etapa 1.
         if op == "outros" and spec.others_named:

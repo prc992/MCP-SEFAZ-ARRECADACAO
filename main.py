@@ -238,7 +238,7 @@ def chat(req: ChatRequest, request: Request, x_session_id: str | None = Header(d
     if decisao.action == "answer":
         # Respostas determinísticas e respostas livres não devem ser confundidas no log.
         from chat_service import _op
-        origem = "deterministic" if _op(req) is not None else "llm"
+        origem = decisao.origin or ("deterministic" if _op(req) is not None else "llm")
         return finalizar({"action": "answer", "answer": decisao.answer,
                          "query_interpretada": req.previous_spec.model_dump()})
     spec = decisao.query_spec

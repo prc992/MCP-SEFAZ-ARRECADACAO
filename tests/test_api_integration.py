@@ -180,3 +180,135 @@ def test_keyword_limit_remains_until_phase_2():
     spec = QuerySpec(metric="valor_arrecadado", group_by="segmento")
     req = ChatRequest(question="Qual segmento arrecadou mais?", previous_spec=spec)
     assert _op(req) is None
+
+
+def test_chat_active_semantic_origin_logged_as_deterministic(api, monkeypatch):
+    from analysis.planner import AnalysisIntent
+    import chat_service
+
+    class FakeResponses:
+        def parse(self, **kwargs):
+            assert kwargs["text_format"] is AnalysisIntent
+            return SimpleNamespace(output_parsed=AnalysisIntent(
+                action="analyze", operation="maximo", metric=None,
+                category=None, category_source="none"))
+
+    monkeypatch.setenv("ANALYSIS_PLANNER_MODE", "active")
+    monkeypatch.setattr(chat_service, "_client", lambda: SimpleNamespace(responses=FakeResponses()))
+    client, events = api
+    res = client.post("/chat", json=_payload("Qual segmento arrecadou mais?"))
+    assert res.status_code == 200, res.text
+    assert res.json()["action"] == "answer"
+    assert "R$ 1.000,00" in res.json()["answer"]
+    assert events[-1]["origem"] == "deterministic"
+    assert res.json()["query_interpretada"]["group_by"] == "segmento"
+
+
+def test_chat_active_new_query_still_executes_existing_pipeline(api, monkeypatch):
+    from analysis.planner import AnalysisIntent
+    import chat_service
+    from schemas import QuerySpec
+
+    new_spec = QuerySpec(metric="valor_arrecadado", group_by="subgrupo",
+                         start_date="2026-10-01", end_date="2026-10-31")
+
+    class FakeResponses:
+        def parse(self, **kwargs):
+            if kwargs["text_format"] is AnalysisIntent:
+                return SimpleNamespace(output_parsed=AnalysisIntent(
+                    action="query", operation=None, metric=None,
+                    category=None, category_source="none"))
+            if kwargs["text_format"] is chat_service.ChatDecision:
+                return SimpleNamespace(output_parsed=chat_service.ChatDecision(
+                    action="query", query_spec=new_spec))
+            raise AssertionError("unexpected format")
+
+    monkeypatch.setenv("ANALYSIS_PLANNER_MODE", "active")
+    monkeypatch.setattr(chat_service, "_client", lambda: SimpleNamespace(responses=FakeResponses()))
+    client, events = api
+    res = client.post("/chat", json=_payload("Quanto foi arrecadado em outubro por subgrupo?"))
+    assert res.status_code == 200, res.text
+    assert res.json()["action"] == "query"
+    assert res.json()["query_interpretada"]["start_date"] == "2026-10-01"
+    assert res.json()["dados_brutos"] == [{"subgrupo": "ICMS", "valor_arrecadado": 500}]
+    assert events[-1]["origem"] == "llm_query"
+
+def test_http_active_schema_error_does_not_answer_freely(api, monkeypatch):
+    import chat_service
+    from analysis.planner import AnalysisIntent
+    client, events = api
+    monkeypatch.setenv("ANALYSIS_PLANNER_MODE", "active")
+
+    class InvalidResponses:
+        def __init__(self):
+            self.calls = 0
+
+        def parse(self, **kwargs):
+            self.calls += 1
+            assert kwargs["text_format"] is AnalysisIntent
+            AnalysisIntent.model_validate({
+                "action": "defer", "operation": "maximo", "metric": None,
+                "category": None, "category_source": "none",
+            })
+
+    fake = InvalidResponses()
+    monkeypatch.setattr(chat_service, "_client", lambda: SimpleNamespace(responses=fake))
+    response = client.post("/chat", json=_payload("Quem liderou a arrecadação?"))
+    assert response.status_code == 200
+    answer = response.json()
+    assert answer["action"] == "answer"
+    assert "não foi validada" in answer["answer"]
+    assert "1.000" not in answer["answer"]
+    assert events[-1]["origem"] == "deterministic"
+    assert fake.calls == 2
+
+
+def test_http_active_validator_corrects_unfounded_rank_category(api, monkeypatch):
+    """O ranking não pode usar um 'setor' fictício como categoria individual."""
+    import chat_service
+    from analysis.planner import AnalysisIntent
+
+    class FakeResponses:
+        def parse(self, **kwargs):
+            assert kwargs["text_format"] is AnalysisIntent
+            return SimpleNamespace(output_parsed=AnalysisIntent(
+                action="analyze", operation="maximo", metric=None,
+                category="setor", category_source="current"))
+
+    client, events = api
+    monkeypatch.setenv("ANALYSIS_PLANNER_MODE", "active")
+    monkeypatch.setattr(chat_service, "_client", lambda: SimpleNamespace(responses=FakeResponses()))
+    response = client.post("/chat", json=_payload("Qual setor ficou na primeira posição?"))
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "answer"
+    assert "Comércio" in data["answer"] and "R$ 1.000,00" in data["answer"]
+    assert events[-1]["origem"] == "deterministic"
+
+
+def test_http_active_validator_clarification_never_calls_unstructured_llm(api, monkeypatch):
+    import chat_service
+    from analysis.planner import AnalysisIntent
+
+    class AlwaysWrong:
+        def __init__(self):
+            self.calls = []
+        def parse(self, **kwargs):
+            self.calls.append(kwargs)
+            assert kwargs["text_format"] is AnalysisIntent
+            return SimpleNamespace(output_parsed=AnalysisIntent(
+                action="query", operation=None, metric=None,
+                category=None, category_source="none"))
+
+    client, events = api
+    fake = AlwaysWrong()
+    monkeypatch.setenv("ANALYSIS_PLANNER_MODE", "active")
+    monkeypatch.setattr(chat_service, "_client", lambda: SimpleNamespace(responses=fake))
+    response = client.post("/chat", json=_payload("Qual segmento ficou na primeira posição?"))
+    assert response.status_code == 200
+    data = response.json()
+    assert data["action"] == "answer"
+    assert "dados já exibidos" in data["answer"]
+    assert "1.000" not in data["answer"]
+    assert events[-1]["origem"] == "deterministic"
+    assert len(fake.calls) == 2
