@@ -6,11 +6,9 @@ from collections import defaultdict
 from decimal import Decimal
 
 from .schemas import AnalysisResult, AnalysisSpec
+from .domain import DomainCatalog, resolve_catalog
 from .operations import amplitude_values, extreme_period, period_changes, rank_values, sum_others
 
-
-CATEGORIAS = ("decendio", "mes", "data_pagamento", "receita", "codigo_receita", "subgrupo", "segmento", "total")
-EXCLUIR_NUMERICAS = {"variacao_percentual", "diferenca", "qtd_registros", "codigo_receita", "periodo"}
 
 
 def _dec(v):
@@ -19,33 +17,35 @@ def _dec(v):
     return Decimal(str(v))
 
 
-def metricas_disponiveis(linhas, spec):
+def metricas_disponiveis(linhas, spec, catalog: DomainCatalog | None = None):
     """Detecta as métricas que efetivamente estão nos registros da resposta."""
-    valores = {k for row in linhas for k, v in row.items() if _dec(v) is not None and k not in EXCLUIR_NUMERICAS}
-    if spec.analysis_type == "compare_periods" and spec.report_type == "standard":
+    domain = resolve_catalog(catalog)
+    valores = {k for row in linhas for k, v in row.items() if _dec(v) is not None and k not in domain.derived_numeric_fields}
+    if spec.analysis_type == "compare_periods" and not domain.is_long_comparison(spec.report_type):
         a, b = spec.period_1_label or "periodo_1", spec.period_2_label or "periodo_2"
         return {spec.metric} if a in valores and b in valores else set()
     return valores
 
 
-def _forma_dados(linhas, spec: AnalysisSpec):
+def _forma_dados(linhas, spec: AnalysisSpec, catalog: DomainCatalog | None = None):
     """Forma {categoria: (valor_1, valor_2)}; rejeita pares incompletos e duplicatas.
 
     Preserve a regra original: valor ausente NÃO equivale a zero.
     """
-    linhas = [r for r in linhas if r.get("decendio") != "Total geral"]
-    if not linhas or spec.group_by not in CATEGORIAS:
+    domain = resolve_catalog(catalog)
+    linhas = domain.without_totals(linhas)
+    if not linhas or spec.group_by not in domain.dimensions:
         return None
     matriz = {}
     chave = spec.group_by
     metrica = spec.metric
     if spec.analysis_type == "compare_periods":
         p1, p2 = spec.period_1_label or "periodo_1", spec.period_2_label or "periodo_2"
-        if spec.report_type == "icms_fecop":
+        if domain.is_long_comparison(spec.report_type):
             temporario = defaultdict(dict)
             for r in linhas:
                 cat = r.get(chave)
-                per = r.get("periodo")
+                per = r.get(domain.period_field)
                 val = _dec(r.get(metrica))
                 if cat is None or per not in (p1, p2) or val is None or per in temporario[str(cat)]:
                     return None
@@ -72,6 +72,9 @@ def _forma_dados(linhas, spec: AnalysisSpec):
 
 
 class AnalysisEngine:
+    def __init__(self, catalog: DomainCatalog | None = None):
+        self.catalog = resolve_catalog(catalog)
+
     def execute(self, spec: AnalysisSpec, linhas: list[dict]) -> AnalysisResult:
         def result(status, *, category=None, counterpart=None, selected_period=None, **values):
             return AnalysisResult(
@@ -85,7 +88,7 @@ class AnalysisEngine:
             return result("too_many_rows")
         if not spec.metric:
             return result("metric_required")
-        matriz = _forma_dados(linhas, spec)
+        matriz = _forma_dados(linhas, spec, self.catalog)
         if not matriz:
             return result("invalid_data")
 
@@ -161,3 +164,12 @@ class AnalysisEngine:
             return result("ok", category=cat, value=matriz[cat][0])
 
         return result("unsupported")
+
+
+def __getattr__(name):
+    """Compatibilidade para imports legados; a execução usa sempre self.catalog."""
+    if name == "CATEGORIAS":
+        return resolve_catalog().dimensions
+    if name == "EXCLUIR_NUMERICAS":
+        return set(resolve_catalog().derived_numeric_fields)
+    raise AttributeError(name)

@@ -12,6 +12,7 @@ import unicodedata
 from typing import Literal
 
 from .schemas import AnalysisSpec
+from .domain import DomainCatalog, resolve_catalog
 
 
 @dataclass(frozen=True)
@@ -28,20 +29,8 @@ def _norm(value: object) -> str:
     return " ".join(text.strip().split())
 
 
-def _mentioned(value: str, message: str) -> bool:
-    target, text = _norm(value), _norm(message)
-    if not target:
-        return False
-    if re.search(r"(?<!\w)" + re.escape(target) + r"(?!\w)", text):
-        return True
-    ordinal = re.fullmatch(r"([123]) decendio", target)
-    if ordinal:
-        aliases = {"1": ("primeiro", "1º", "1o"),
-                   "2": ("segundo", "2º", "2o"),
-                   "3": ("terceiro", "3º", "3o")}[ordinal.group(1)]
-        return any(re.search(r"(?<!\w)" + re.escape(f"{x} decendio") + r"(?!\w)", text)
-                   for x in aliases)
-    return False
+def _mentioned(value: str, message: str, catalog: DomainCatalog | None = None) -> bool:
+    return resolve_catalog(catalog).mentions_category(value, message)
 
 
 def _last_turn(req) -> str:
@@ -51,7 +40,18 @@ def _last_turn(req) -> str:
     return str(last.get("user", "")) + " " + str(last.get("assistant", ""))
 
 
-def _explicit_scope_change(question: str, query_spec) -> bool:
+def _elliptical_followup(question: str) -> bool:
+    """Referência curta e explícita à última operação, não pergunta global nova.
+
+    'Qual foi a variação percentual?' não é elipse suficiente para escolher
+    arbitrariamente o último vencedor de um ranking.
+    """
+    n = _norm(question).strip(" ?!.\t\n")
+    return bool(re.match(r"^e\s+(?:em\s+|quanto\s+|qual\s+|porcentagem\b|percentual\b|proporcionalmente\b)", n)
+                or re.match(r"^quanto\s+(?:isso|essa\s+diferenca)\b", n))
+
+
+def _explicit_scope_change(question: str, query_spec, catalog: DomainCatalog | None = None) -> bool:
     """Evidência conservadora de solicitação de NOVOS dados; não classifica operação.
 
     Quando não há evidência, outra classificação é exigida. Não converte
@@ -79,12 +79,17 @@ def _explicit_scope_change(question: str, query_spec) -> bool:
     for year in re.findall(r"(?<!\d)(20\d{2})(?!\d)", n):
         if not any(p.startswith(year) for p in periods):
             return True
-    # Expressa outra dimensão não presente na consulta atual.
-    groups = ("segmento", "subgrupo", "receita", "codigo_receita", "decendio", "mes", "data_pagamento")
-    if re.search(r"\bpor\s+(segmento|subgrupo|receita|codigo de receita|decendio|mes|dia)\b", n):
-        for word in groups:
-            if word != query_spec.group_by and re.search(r"\bpor\s+" + word + r"\b", n):
-                return True
+    # Dimensões e aliases vêm exclusivamente do DomainCatalog.
+    domain = resolve_catalog(catalog)
+    for phrase in re.findall(r"\bpor\s+([\w ]+)", n):
+        # Inspeciona prefixos de no máximo 3 palavras, evitando capturar filtros.
+        words = phrase.split()
+        for size in (3, 2, 1):
+            group = domain.dimension_from_phrase(" ".join(words[:size]))
+            if group is not None:
+                if group != query_spec.group_by:
+                    return True
+                break
     return False
 
 
@@ -93,10 +98,82 @@ def _clearly_explanatory(question: str) -> bool:
     return bool(re.match(r"^(por que|porque|qual a causa|quais as causas|o que significa|o que e |explique o conceito|defina )\b", n))
 
 
+@dataclass(frozen=True)
+class _RecoveryIntent:
+    """Intenção mínima inferida só de evidências locais verificáveis.
+
+    Não substitui a classificação semântica: apenas protege operações
+    inequívocas quando o esquema da LLM falhou ou o escopo foi mal classificado.
+    """
+    action: str
+    operation: str
+    metric: str | None
+    category: str | None
+    category_source: str
+
+
 class AnalysisPlanValidator:
+    def __init__(self, catalog: DomainCatalog | None = None):
+        self.catalog = resolve_catalog(catalog)
+
+    def recover_unambiguous(self, req, available: set[str], categories: list[str]) -> ValidationDecision | None:
+        """Fallback conservador para erros de esquema/escopo da LLM.
+
+        Somente reconhece três formas cuja operação e referências podem ser
+        COMPROVADAS: amplitude global; valor de categoria explicitamente citada;
+        continuação percentual com uma única categoria na última troca.
+        Nunca calcula números, nunca inventa categoria, nem substitui query
+        quando há evidência de outro recorte.
+        """
+        n = re.sub(r"^\s*\d+[.)]\s*", "", _norm(req.question)).strip(" ?!.\t\n")
+        # Resposta à pergunta de escopo: recuperar apenas a solicitação
+        # comprovada na última troca. Não completar uma categoria por palpite.
+        if n in {"nos dados ja exibidos", "nos dados exibidos", "nos dados atuais"} and req.history:
+            last = req.history[-1]
+            if "dados ja exibidos ou fazer uma nova consulta" in _norm(last.get("assistant", "")):
+                original = str(last.get("user", ""))
+                if original and _norm(original) != n:
+                    restored = req.model_copy(update={
+                        "question": original, "history": req.history[:-1]
+                    })
+                    return self.recover_unambiguous(restored, available, categories)
+        if _explicit_scope_change(req.question, req.previous_spec, self.catalog):
+            return None
+        current = [c for c in categories if _mentioned(c, req.question, self.catalog)]
+        previous = [c for c in categories if _mentioned(c, _last_turn(req), self.catalog)]
+        if len(current) > 1:
+            return None
+
+        operation = None
+        category = None
+        source = "none"
+        if (req.previous_spec.analysis_type != "compare_periods" and not current
+                and re.search(r"\b(diferenca|distancia)\b", n)
+                and re.search(r"\bmaior\b", n) and re.search(r"\bmenor\b", n)):
+            operation = "amplitude"
+        elif (len(current) == 1 and
+              (re.match(r"^quanto\b", n) or re.match(r"^qual (?:foi |e )?(?:o )?valor\b", n))):
+            operation = "valor"
+            category, source = current[0], "current"
+        elif (req.previous_spec.analysis_type == "compare_periods" and
+              _elliptical_followup(req.question) and len(previous) == 1 and
+              re.search(r"\b(percentual|percentuais|porcentagem|porcentagens)\b", n)):
+            operation = "variacao_percentual"
+            category, source = previous[0], "previous"
+        if operation is None:
+            return None
+
+        # Se a pergunta cita um indicador, ele deve ser suportado pelos dados.
+        matches = self.catalog.mentioned_metrics(req.question, set(self.catalog.metrics))
+        metric = self.catalog.remap_metric(matches[0], req.previous_spec.report_type) if matches else None
+        if metric is not None and metric not in available:
+            return None
+        return self.validate(req, _RecoveryIntent("analyze", operation, metric, category, source),
+                             available, categories, retry=True)
+
     def validate(self, req, intent, available: set[str], categories: list[str], *, retry: bool = False) -> ValidationDecision:
         if intent.action == "query":
-            if _explicit_scope_change(req.question, req.previous_spec):
+            if _explicit_scope_change(req.question, req.previous_spec, self.catalog):
                 return ValidationDecision("query")
             if not retry:
                 return ValidationDecision("retry", reason="query_without_scope_evidence")
@@ -123,8 +200,17 @@ class AnalysisPlanValidator:
         candidates = [c for c in categories if intent.category is not None and _norm(c) == _norm(intent.category)]
         category = candidates[0] if len(candidates) == 1 else None
         op = intent.operation
+        # Uma amplitude explicitamente descrita tem semântica inequívoca.
+        # Corrige somente classificações próximas feitas sobre período único.
+        n = _norm(req.question)
+        if (req.previous_spec.analysis_type != "compare_periods"
+                and op in ("diferenca", "variacao", "maximo", "minimo")
+                and re.search(r"\b(diferenca|distancia)\b", n)
+                and re.search(r"\bmaior\b", n) and re.search(r"\bmenor\b", n)
+                and not any(_mentioned(c, req.question, self.catalog) for c in categories)):
+            op = "amplitude"
         global_rank = req.previous_spec.analysis_type != "compare_periods" and op in ("maximo", "minimo", "amplitude")
-        mentioned_categories = [c for c in categories if _mentioned(c, req.question)]
+        mentioned_categories = [c for c in categories if _mentioned(c, req.question, self.catalog)]
         mentions_known_category = bool(mentioned_categories)
         target_operation = op in ("valor", "variacao", "variacao_percentual", "diferenca", "outros") or (
             req.previous_spec.analysis_type == "compare_periods" and op in ("maximo", "minimo"))
@@ -136,6 +222,19 @@ class AnalysisPlanValidator:
             # a referência da última troca e sobre o alvo sugerido pela LLM.
             category = mentioned_categories[0]
             category_source = "current"
+        elif target_operation and not mentioned_categories and _elliptical_followup(req.question):
+            # Para uma elipse explícita, o referente é obtido do histórico
+            # comprovável, e NÃO de category_source fornecido pela LLM.
+            previous_categories = [c for c in categories
+                                   if _mentioned(c, _last_turn(req), self.catalog)]
+            if len(previous_categories) == 1:
+                category = previous_categories[0]
+                category_source = "previous"
+            elif len(previous_categories) > 1:
+                return ValidationDecision("clarify", reason="multiple_previous_categories",
+                    question="A última interação mencionou mais de uma categoria. Qual delas deseja analisar?")
+            else:
+                category_source = intent.category_source
         else:
             category_source = intent.category_source
 
@@ -151,7 +250,7 @@ class AnalysisPlanValidator:
                 return ValidationDecision("clarify", reason="category_not_available",
                     question="A operação solicitada não foi validada: categoria ausente nos dados exibidos. Qual categoria deseja analisar?")
 
-        if category is not None and category_source == "current" and not _mentioned(category, req.question):
+        if category is not None and category_source == "current" and not _mentioned(category, req.question, self.catalog):
             if global_rank and not mentions_known_category:
                 category = None
             elif not retry:
@@ -162,7 +261,7 @@ class AnalysisPlanValidator:
 
         # Uma classificação anterior não pode usar categoria não comprovada na
         # última interação. Não buscar referentes em todo o histórico.
-        if category is not None and category_source == "previous" and not _mentioned(category, _last_turn(req)):
+        if category is not None and category_source == "previous" and not _mentioned(category, _last_turn(req), self.catalog):
             if global_rank and not mentions_known_category:
                 category = None
             elif not retry:
@@ -182,7 +281,7 @@ class AnalysisPlanValidator:
 
         if op == "outros" and (category is None or category_source != "current" or
                                 req.previous_spec.analysis_type == "compare_periods" or
-                                not _mentioned(category, req.question)):
+                                not _mentioned(category, req.question, self.catalog)):
             return ValidationDecision("clarify", reason="others_requires_explicit_category",
                 question="A operação solicitada não foi validada. Qual categoria você deseja comparar com a soma das demais?")
 
@@ -202,7 +301,7 @@ class AnalysisPlanValidator:
         previous = req.previous_spec
         spec = AnalysisSpec(
             operation=op, metric=intent.metric, category=category,
-            explicit_category=category if category_source == "current" and _mentioned(category, req.question) else None,
+            explicit_category=category if category_source == "current" and _mentioned(category, req.question, self.catalog) else None,
             group_by=previous.group_by, analysis_type=previous.analysis_type,
             report_type=previous.report_type, period_1_label=previous.period_1_label,
             period_2_label=previous.period_2_label, others_named=op == "outros",

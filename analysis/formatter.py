@@ -3,19 +3,11 @@ from decimal import Decimal
 import re
 
 from .schemas import AnalysisResult
+from .domain import DomainCatalog, resolve_catalog
 
 
-METRIC_NAMES = {
-    "icms_a": "ICMS bruto (A)",
-    "fecop_b": "FECOP (B)",
-    "icms_sem_fecop_c": "ICMS sem FECOP (C)",
-    "icms_liquido_tesouro_d": "ICMS líquido Tesouro (D)",
-    "valor_arrecadado": "arrecadação",
-    "qtd_documentos": "documentos pagos",
-}
-
-
-def _br(v, percentual=False, inteiro=False):
+def _br(v, percentual=False, inteiro=False, *, currency_symbol="R$", numeric=False):
+    """Formatação legada (pt-BR); currency/unit vêm do catálogo."""
     if v is None:
         return "indefinida (referência zero)"
     n = Decimal(str(v))
@@ -24,25 +16,24 @@ def _br(v, percentual=False, inteiro=False):
     else:
         fmt = f"{n:,.2f}"
     fmt = fmt.replace(",", "_").replace(".", ",").replace("_", ".")
-    return f"{fmt}%" if percentual else (fmt if inteiro else f"R$ {fmt}")
+    return f"{fmt}%" if percentual else (fmt if inteiro or numeric else f"{currency_symbol} {fmt}")
 
 
-def _rotulo(valor):
-    texto = str(valor).strip()
-    m = re.fullmatch(r"([123]) Decêndio", texto)
-    return f"{m.group(1)}º decêndio" if m else texto.replace("_", "/")
+def _rotulo(valor, catalog: DomainCatalog | None = None):
+    return resolve_catalog(catalog).display_category(valor)
 
 
-def format_analysis_result(result: AnalysisResult) -> str:
+def format_analysis_result(result: AnalysisResult, catalog: DomainCatalog | None = None) -> str:
+    domain = resolve_catalog(catalog)
     status = result.status
     spec = result.spec
     op = spec.operation
-    nome = METRIC_NAMES.get(spec.metric, spec.metric)
+    nome = domain.label(spec.metric)
     if status == "too_many_rows":
         return ("Há muitas linhas para um cálculo confiável no chat. "
                 "Peça um recorte ou agrupamento específico antes de calcular.")
     if status == "metric_required":
-        return "Qual indicador você quer analisar (ICMS, FECOP, ICMS sem FECOP ou ICMS líquido Tesouro)?"
+        return domain.metric_question
     if status == "invalid_data":
         return ("Não há dados numéricos completos para realizar esse cálculo com segurança. "
                 "Solicite uma consulta mais específica ou verifique se ambos os períodos possuem registros.")
@@ -53,7 +44,7 @@ def format_analysis_result(result: AnalysisResult) -> str:
     if status == "all_percent_references_zero":
         return "Não é possível calcular variações percentuais: os valores de referência são zero."
     if status == "percent_reference_zero":
-        return (f"Não é possível calcular a variação percentual de {_rotulo(result.category)}: "
+        return (f"Não é possível calcular a variação percentual de {_rotulo(result.category, domain)}: "
                 f"o valor de referência em {spec.period_1_label or 'período 1'} é zero.")
     if status == "comparison_period_required":
         return ("A consulta atual contém somente um período. "
@@ -70,10 +61,12 @@ def format_analysis_result(result: AnalysisResult) -> str:
         return "Para esse cálculo, indique o indicador, a categoria e os períodos desejados."
 
     val = result.values
-    fmt = lambda x: _br(x, inteiro=spec.metric == "qtd_documentos")
+    unit = domain.unit(spec.metric)
+    fmt = lambda x: _br(x, percentual=unit == "percent", inteiro=unit == "count",
+                        numeric=unit == "number", currency_symbol=domain.currency_symbol)
     p1 = spec.period_1_label or "período 1"
     p2 = spec.period_2_label or "período 2"
-    cat = _rotulo(result.category)
+    cat = _rotulo(result.category, domain)
 
     if op == "outros":
         return (f"{'Sim' if val['value'] > val['other_sum'] else 'Não'}. {cat}: {fmt(val['value'])}; "
@@ -83,7 +76,7 @@ def format_analysis_result(result: AnalysisResult) -> str:
         if op == "amplitude":
             return (f"Diferença entre maior e menor {nome}: {fmt(val['difference'])}, "
                     f"de {cat} ({fmt(val['maximum'])}) "
-                    f"para {_rotulo(result.counterpart)} ({fmt(val['minimum'])}).")
+                    f"para {_rotulo(result.counterpart, domain)} ({fmt(val['minimum'])}).")
         return f"{cat} apresentou o {'maior' if op == 'maximo' else 'menor'} valor de {nome}: {fmt(val['value'])}."
 
     if spec.analysis_type == "compare_periods":
@@ -105,3 +98,10 @@ def format_analysis_result(result: AnalysisResult) -> str:
     if op == "valor":
         return f"{cat}: {nome} = {fmt(val['value'])}."
     return "Para esse cálculo, indique o indicador, a categoria e os períodos desejados."
+
+
+def __getattr__(name):
+    if name == "METRIC_NAMES":
+        domain = resolve_catalog()
+        return {key: metric.label for key, metric in domain.metrics.items()}
+    raise AttributeError(name)

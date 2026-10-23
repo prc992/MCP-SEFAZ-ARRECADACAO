@@ -15,10 +15,8 @@ from schemas import QuerySpec
 from llm_service import _client
 from business_metadata import BUSINESS_METADATA
 from analysis.schemas import AnalysisSpec
-from analysis.engine import (
-    AnalysisEngine, CATEGORIAS, EXCLUIR_NUMERICAS, _dec,
-    metricas_disponiveis as _metricas_disponiveis,
-)
+from analysis.engine import (AnalysisEngine, _dec, metricas_disponiveis as _metricas_disponiveis)
+from domains.sefaz.catalog import SEFAZ_CATALOG
 from analysis.formatter import _br, _rotulo, format_analysis_result
 from analysis.planner import AnalysisPlanner, PlanningOutcome
 
@@ -27,16 +25,9 @@ from analysis.planner import AnalysisPlanner, PlanningOutcome
 logger = logging.getLogger("uvicorn.error")
 
 
-METRICAS = {
-    "icms_a": ("ICMS bruto (A)", ("icms bruto", "icms total", "coluna a", "indicador a", "icms")),
-    "fecop_b": ("FECOP (B)", ("fecop", "coluna b", "indicador b")),
-    "icms_sem_fecop_c": ("ICMS sem FECOP (C)", ("icms sem fecop", "sem fecop", "coluna c", "indicador c")),
-    "icms_liquido_tesouro_d": ("ICMS líquido Tesouro (D)", ("icms liquido tesouro", "icms liquido", "tesouro", "coluna d", "indicador d", "liquido")),
-    "valor_arrecadado": ("arrecadação", ("valor arrecadado", "arrecadacao", "arrecadado", "icms")),
-    "qtd_documentos": ("documentos pagos", ("quantidade de documentos", "documentos", "dae")),
-}
-# Preferir expressões específicas ("sem fecop") a "fecop".
-ORDEM_ALIAS = ("icms_liquido_tesouro_d", "icms_sem_fecop_c", "fecop_b", "icms_a", "qtd_documentos", "valor_arrecadado")
+# Aliases de compatibilidade; definições de negócio vivem no domínio.
+METRICAS = {key: (value.label, value.aliases) for key, value in SEFAZ_CATALOG.metrics.items()}
+ORDEM_ALIAS = SEFAZ_CATALOG.metric_priority
 
 
 def _norm(txt):
@@ -44,20 +35,7 @@ def _norm(txt):
 
 
 def _mencoes_metricas(texto, disponiveis):
-    n = _norm(texto)
-    if "sem fecop" in n or "indicador c" in n or "coluna c" in n:
-        return ["icms_sem_fecop_c"] if "icms_sem_fecop_c" in disponiveis else []
-    if any(p in n for p in ("liquido", "tesouro", "indicador d", "coluna d")):
-        return ["icms_liquido_tesouro_d"] if "icms_liquido_tesouro_d" in disponiveis else []
-    if any(p in n for p in ("fecop", "indicador b", "coluna b")):
-        return ["fecop_b"] if "fecop_b" in disponiveis else []
-    if any(p in n for p in ("icms", "indicador a", "coluna a")):
-        if "icms_a" in disponiveis: return ["icms_a"]
-        if "valor_arrecadado" in disponiveis: return ["valor_arrecadado"]
-    for key in ("qtd_documentos", "valor_arrecadado"):
-        if key in disponiveis and any(a in n for a in METRICAS[key][1]):
-            return [key]
-    return []
+    return SEFAZ_CATALOG.mentioned_metrics(texto, set(disponiveis))
 
 
 def _referente_metricas(texto, disponiveis):
@@ -85,21 +63,19 @@ def _selecionar_metrica(req, disponiveis):
 
     if len(disponiveis) == 1:
         return next(iter(disponiveis))
-    if req.previous_spec.report_type == "standard" and req.previous_spec.metric in disponiveis:
-        return req.previous_spec.metric
-    return None
+    return SEFAZ_CATALOG.context_metric(req.previous_spec.metric, req.previous_spec.report_type, disponiveis)
 
 
 def _categoria_explicita(texto, categorias):
+    # Compatibilidade estrita do parser legacy da Etapa 1 (inclusive matching
+    # por substring para categorias de um caractere). O validador semântico
+    # continua usando correspondência com limites de palavra, mais segura.
     n = _norm(texto)
     for cat in categorias:
-        if cat == "Total": continue
-        if _norm(cat) in n: return cat
-        m = re.fullmatch(r"([123]) Decêndio", cat)
-        if m:
-            d = m.group(1)
-            ordinais = {"1": ("primeiro", "1o", "1º"), "2": ("segundo", "2o", "2º"), "3": ("terceiro", "3o", "3º")}[d]
-            if any(f"{p} decendio" in n for p in ordinais) or f"{d} decendio" in n: return cat
+        if cat is None or cat == "Total":
+            continue
+        if _norm(cat) in n or SEFAZ_CATALOG.mentions_category(str(cat), texto):
+            return cat
     return None
 
 
@@ -163,7 +139,7 @@ def _responder_deterministico(req):
     if not operacao:
         return None
     spec = req.previous_spec
-    dados = [r for r in req.previous_data if r.get("decendio") != "Total geral"]
+    dados = SEFAZ_CATALOG.without_totals(req.previous_data)
 
     # Se o resultado pode estar truncado, não interpretar dados incompletos.
     # Essa proteção também existe na execução para chamadas diretas ao engine.
@@ -173,9 +149,9 @@ def _responder_deterministico(req):
             analysis_type=spec.analysis_type, report_type=spec.report_type,
             period_1_label=spec.period_1_label, period_2_label=spec.period_2_label,
         )
-        return format_analysis_result(AnalysisEngine().execute(contexto, req.previous_data))
+        return format_analysis_result(AnalysisEngine(catalog=SEFAZ_CATALOG).execute(contexto, req.previous_data), catalog=SEFAZ_CATALOG)
 
-    disponiveis = _metricas_disponiveis(dados, spec)
+    disponiveis = _metricas_disponiveis(dados, spec, SEFAZ_CATALOG)
     metrica = _selecionar_metrica(req, disponiveis)
 
     # A categoria é identificada no contexto conversacional atual. O engine
@@ -194,8 +170,8 @@ def _responder_deterministico(req):
         period_1_label=spec.period_1_label, period_2_label=spec.period_2_label,
         others_named="outros" in _norm(req.question),
     )
-    resultado = AnalysisEngine().execute(contexto, req.previous_data)
-    return format_analysis_result(resultado)
+    resultado = AnalysisEngine(catalog=SEFAZ_CATALOG).execute(contexto, req.previous_data)
+    return format_analysis_result(resultado, catalog=SEFAZ_CATALOG)
 
 
 class ChatDecision(BaseModel):
@@ -248,14 +224,13 @@ def _answer_semantic(req: ChatRequest, outcome: PlanningOutcome) -> str:
         raise ValueError("Planejamento não executável")
     contexto = outcome.spec.model_copy(deep=True)
     disponiveis = _metricas_disponiveis(
-        [r for r in req.previous_data if r.get("decendio") != "Total geral"],
-        req.previous_spec,
+        SEFAZ_CATALOG.without_totals(req.previous_data),
+        req.previous_spec, SEFAZ_CATALOG,
     )
     # Alias de indicadores servem APENAS como validação de segurança; a
     # classificação principal da operação é semântica, não baseada em keywords.
-    indicada = _referente_metricas(req.question, set(METRICAS))
-    if indicada == "icms_a" and req.previous_spec.report_type == "standard":
-        indicada = "valor_arrecadado"
+    indicada = SEFAZ_CATALOG.remap_metric(
+        _referente_metricas(req.question, set(METRICAS)), req.previous_spec.report_type)
     if indicada and indicada not in disponiveis:
         return "O indicador solicitado não está disponível nos dados exibidos. Solicite uma nova consulta."
     if contexto.metric is not None and indicada and contexto.metric != indicada:
@@ -265,8 +240,8 @@ def _answer_semantic(req: ChatRequest, outcome: PlanningOutcome) -> str:
         contexto.metric = _selecionar_metrica(req, disponiveis)
     if contexto.metric is not None and contexto.metric not in disponiveis:
         return "O indicador solicitado não está disponível nos dados exibidos. Solicite uma nova consulta."
-    result = AnalysisEngine().execute(contexto, req.previous_data)
-    return format_analysis_result(result)
+    result = AnalysisEngine(catalog=SEFAZ_CATALOG).execute(contexto, req.previous_data)
+    return format_analysis_result(result, catalog=SEFAZ_CATALOG)
 
 
 def _planner_mode():
@@ -278,7 +253,7 @@ def _planner_mode():
 
 
 def _plan_semantic(req: ChatRequest) -> PlanningOutcome:
-    return AnalysisPlanner(client_factory=_client).plan(req)
+    return AnalysisPlanner(client_factory=_client, catalog=SEFAZ_CATALOG).plan(req)
 
 
 def _shadow_compare(req: ChatRequest, outcome: PlanningOutcome) -> None:
