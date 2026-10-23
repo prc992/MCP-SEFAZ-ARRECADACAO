@@ -1,11 +1,9 @@
-"""Motor conversacional: operações numéricas determinísticas independentes da métrica.
+"""Motor conversacional: interpretação conservadora + delegação analítica.
 
-O motor usa os dados brutos, o QuerySpec e o último contexto analítico do histórico.
-Consultas novas continuam a ser planejadas pela LLM e executadas pela API.
+Etapa 1: mantém _op e o contrato público; engine e formatter são independentes
+        da LLM e podem ser reutilizados.
 """
 from typing import Literal
-from decimal import Decimal
-from collections import defaultdict
 import json
 import os
 import re
@@ -15,6 +13,12 @@ from pydantic import BaseModel, Field
 from schemas import QuerySpec
 from llm_service import _client
 from business_metadata import BUSINESS_METADATA
+from analysis.schemas import AnalysisSpec
+from analysis.engine import (
+    AnalysisEngine, CATEGORIAS, EXCLUIR_NUMERICAS, _dec,
+    metricas_disponiveis as _metricas_disponiveis,
+)
+from analysis.formatter import _br, _rotulo, format_analysis_result
 
 
 METRICAS = {
@@ -27,43 +31,10 @@ METRICAS = {
 }
 # Preferir expressões específicas ("sem fecop") a "fecop".
 ORDEM_ALIAS = ("icms_liquido_tesouro_d", "icms_sem_fecop_c", "fecop_b", "icms_a", "qtd_documentos", "valor_arrecadado")
-CATEGORIAS = ("decendio", "mes", "data_pagamento", "receita", "codigo_receita", "subgrupo", "segmento", "total")
-EXCLUIR_NUMERICAS = {"variacao_percentual", "diferenca", "qtd_registros", "codigo_receita", "periodo"}
 
 
 def _norm(txt):
     return "".join(c for c in unicodedata.normalize("NFD", str(txt).lower()) if unicodedata.category(c) != "Mn")
-
-
-def _dec(v):
-    if isinstance(v, bool) or not isinstance(v, (int, float, Decimal)):
-        return None
-    return Decimal(str(v))
-
-
-def _br(v, percentual=False, inteiro=False):
-    if v is None:
-        return "indefinida (referência zero)"
-    n = Decimal(str(v))
-    if inteiro:
-        fmt = f"{n:,.0f}"
-    else:
-        fmt = f"{n:,.2f}"
-    fmt = fmt.replace(",", "_").replace(".", ",").replace("_", ".")
-    return f"{fmt}%" if percentual else (fmt if inteiro else f"R$ {fmt}")
-
-
-def _rotulo(valor):
-    m = re.fullmatch(r"([123]) Decêndio", str(valor))
-    return f"{m.group(1)}º decêndio" if m else str(valor).replace("_", "/")
-
-
-def _metricas_disponiveis(linhas, spec):
-    valores = {k for row in linhas for k, v in row.items() if _dec(v) is not None and k not in EXCLUIR_NUMERICAS}
-    if spec.analysis_type == "compare_periods" and spec.report_type == "standard":
-        a, b = spec.period_1_label or "periodo_1", spec.period_2_label or "periodo_2"
-        return {spec.metric} if a in valores and b in valores else set()
-    return valores
 
 
 def _mencoes_metricas(texto, disponiveis):
@@ -111,46 +82,6 @@ def _selecionar_metrica(req, disponiveis):
     if req.previous_spec.report_type == "standard" and req.previous_spec.metric in disponiveis:
         return req.previous_spec.metric
     return None
-
-
-def _forma_dados(req, metrica):
-    """Retorna {categoria: (periodo_1, periodo_2)} ou {categoria:(valor,None)}.
-
-    Se houver duplicidade, par ausente ou valores nulos, retorna None.
-    Não supõe zero para períodos sem registros.
-    """
-    spec = req.previous_spec
-    linhas = [r for r in req.previous_data if r.get("decendio") != "Total geral"]
-    if not linhas: return None
-    chave = spec.group_by
-    if chave not in CATEGORIAS: return None
-    matriz = {}
-    if spec.analysis_type == "compare_periods":
-        p1, p2 = spec.period_1_label or "periodo_1", spec.period_2_label or "periodo_2"
-        if spec.report_type == "icms_fecop":
-            temporario = defaultdict(dict)
-            for r in linhas:
-                cat = r.get(chave)
-                per = r.get("periodo")
-                val = _dec(r.get(metrica))
-                if cat is None or per not in (p1,p2) or val is None or per in temporario[str(cat)]: return None
-                temporario[str(cat)][per] = val
-            for cat, pares in temporario.items():
-                if set(pares) != {p1,p2}: return None
-                matriz[cat] = (pares[p1], pares[p2])
-        else:
-            for r in linhas:
-                cat = str(r.get(chave))
-                v1, v2 = _dec(r.get(p1)), _dec(r.get(p2))
-                if cat in matriz or v1 is None or v2 is None: return None
-                matriz[cat] = (v1,v2)
-    else:
-        for r in linhas:
-            cat = str(r.get(chave))
-            v = _dec(r.get(metrica))
-            if cat in matriz or v is None: return None
-            matriz[cat] = (v,None)
-    return matriz or None
 
 
 def _categoria_explicita(texto, categorias):
@@ -218,87 +149,47 @@ def _op(req):
 
 
 def _responder_deterministico(req):
+    """Traduz a operação identificada por _op em AnalysisSpec e delega o cálculo.
+
+    Compatível com a assinatura e com as mensagens antigas de chat_service.
+    """
     operacao = _op(req)
-    if not operacao: return None
-    # O Playground transmite no máximo 101 linhas. Um conjunto desse tamanho
-    # pode ser uma amostra truncada; nunca calcular rankings ou totais parciais.
-    if len(req.previous_data) >= 101:
-        return ("Há muitas linhas para um cálculo confiável no chat. "
-                "Peça um recorte ou agrupamento específico antes de calcular.")
-    dados = [r for r in req.previous_data if r.get("decendio") != "Total geral"]
-    disponiveis = _metricas_disponiveis(dados, req.previous_spec)
-    metrica = _selecionar_metrica(req, disponiveis)
-    if not metrica:
-        return "Qual indicador você quer analisar (ICMS, FECOP, ICMS sem FECOP ou ICMS líquido Tesouro)?"
-    matriz = _forma_dados(req, metrica)
-    if not matriz:
-        return ("Não há dados numéricos completos para realizar esse cálculo com segurança. "
-                "Solicite uma consulta mais específica ou verifique se ambos os períodos possuem registros.")
+    if not operacao:
+        return None
     spec = req.previous_spec
-    comparacao = spec.analysis_type == "compare_periods"
-    nome = METRICAS.get(metrica,(metrica,))[0]
-    quantidade = metrica == "qtd_documentos"
-    fmt = lambda x: _br(x, inteiro=quantidade)
-    p1,p2 = spec.period_1_label or "período 1", spec.period_2_label or "período 2"
-    cat = _categoria_explicita(req.question, matriz)
+    dados = [r for r in req.previous_data if r.get("decendio") != "Total geral"]
+
+    # Se o resultado pode estar truncado, não interpretar dados incompletos.
+    # Essa proteção também existe na execução para chamadas diretas ao engine.
+    if len(req.previous_data) >= 101:
+        contexto = AnalysisSpec(
+            operation=operacao, group_by=spec.group_by,
+            analysis_type=spec.analysis_type, report_type=spec.report_type,
+            period_1_label=spec.period_1_label, period_2_label=spec.period_2_label,
+        )
+        return format_analysis_result(AnalysisEngine().execute(contexto, req.previous_data))
+
+    disponiveis = _metricas_disponiveis(dados, spec)
+    metrica = _selecionar_metrica(req, disponiveis)
+
+    # A categoria é identificada no contexto conversacional atual. O engine
+    # verifica se há dados íntegros antes de consultar os valores dessa categoria.
+    categorias = dict.fromkeys(str(r.get(spec.group_by)) for r in dados)
+    cat_explicita = _categoria_explicita(req.question, categorias)
+    cat = cat_explicita
     if not cat and (operacao in ("variacao_percentual", "variacao", "diferenca", "valor")
                     or _continuacao_percentual(req.question)):
-        cat = _ultima_categoria(req.history, matriz)
-    n = _norm(req.question)
-    if "outros" in n and operacao == "outros":
-        alvo = _categoria_explicita(req.question, matriz)
-        if not alvo or len(matriz) < 2 or comparacao: return "Indique a categoria que deseja comparar com as demais, em uma consulta de período único."
-        v = matriz[alvo][0]
-        resto = sum((x[0] for c,x in matriz.items() if c != alvo), Decimal(0))
-        return (f"{'Sim' if v > resto else 'Não'}. {_rotulo(alvo)}: {fmt(v)}; demais categorias juntas: {fmt(resto)}; "
-                f"diferença: {fmt(v-resto)}.")
-    if operacao in ("maximo","minimo","amplitude") and not comparacao:
-        maior = max(matriz, key=lambda c: matriz[c][0]); menor = min(matriz, key=lambda c: matriz[c][0])
-        if operacao == "amplitude":
-            return f"Diferença entre maior e menor {nome}: {fmt(matriz[maior][0]-matriz[menor][0])}, de {_rotulo(maior)} ({fmt(matriz[maior][0])}) para {_rotulo(menor)} ({fmt(matriz[menor][0])})."
-        vencedor = maior if operacao == "maximo" else menor
-        return f"{_rotulo(vencedor)} apresentou o {'maior' if operacao == 'maximo' else 'menor'} valor de {nome}: {fmt(matriz[vencedor][0])}."
-    if comparacao:
-        deltas = {c: b-a for c,(a,b) in matriz.items()}
-        percentuais = {c: (b-a)*Decimal(100)/a if a != 0 else None for c,(a,b) in matriz.items()}
-        if operacao.startswith("crescimento_"):
-            percent = operacao.endswith("percentual")
-            validos = percentuais if percent else deltas
-            dispon = {c:v for c,v in validos.items() if v is not None}
-            if not dispon: return "Não é possível calcular variações percentuais: os valores de referência são zero."
-            extremo = min if "_min" in operacao else max
-            vencedor = extremo(dispon, key=dispon.get)
-            a,b = matriz[vencedor]
-            return (f"{_rotulo(vencedor)} apresentou a {'menor' if '_min' in operacao else 'maior'} "
-                    f"variação {'percentual' if percent else 'absoluta'} de {nome} entre {p1} e {p2}: "
-                    f"{fmt(a)} → {fmt(b)}; diferença {fmt(b-a)}; "
-                    f"variação {_br(percentuais[vencedor],percentual=True)}.")
-        if operacao in ("variacao", "variacao_percentual", "diferenca"):
-            if not cat:
-                return f"De qual categoria você deseja a variação de {nome}?"
-            a,b = matriz[cat]
-            if operacao == "variacao_percentual" and a == 0:
-                return f"Não é possível calcular a variação percentual de {_rotulo(cat)}: o valor de referência em {p1} é zero."
-            return (f"{_rotulo(cat)}, {nome}, {p1} → {p2}: {fmt(a)} → {fmt(b)}; "
-                    f"diferença {fmt(b-a)}; variação {_br(percentuais[cat], percentual=True)}.")
-        if operacao in ("maximo","minimo"):
-            if not cat:
-                return "Em qual período deseja identificar o maior ou menor valor?"
-            a,b = matriz[cat]
-            alvo = (p2,b) if b>=a else (p1,a)
-            if operacao=="minimo": alvo = (p1,a) if a<=b else (p2,b)
-            return f"{_rotulo(cat)}: {'maior' if operacao=='maximo' else 'menor'} {nome} em {alvo[0]} ({fmt(alvo[1])})."
-        if operacao == "valor":
-            if not cat: return "De qual categoria e período você deseja o valor?"
-            return f"{_rotulo(cat)}: {p1} = {fmt(matriz[cat][0])}; {p2} = {fmt(matriz[cat][1])}."
-    if operacao in ("variacao_percentual", "variacao", "diferenca"):
-        return ("A consulta atual contém somente um período. "
-                "Para calcular a variação, solicite uma comparação entre dois períodos.")
-    if operacao == "valor":
-        if not cat: return f"De qual categoria você deseja o valor de {nome}?"
-        return f"{_rotulo(cat)}: {nome} = {fmt(matriz[cat][0])}."
-    # Nunca delegar operação numérica reconhecida para resposta matemática livre da LLM.
-    return "Para esse cálculo, indique o indicador, a categoria e os períodos desejados."
+        cat = _ultima_categoria(req.history, categorias)
+
+    contexto = AnalysisSpec(
+        operation=operacao, metric=metrica, category=cat,
+        explicit_category=cat_explicita, group_by=spec.group_by,
+        analysis_type=spec.analysis_type, report_type=spec.report_type,
+        period_1_label=spec.period_1_label, period_2_label=spec.period_2_label,
+        others_named="outros" in _norm(req.question),
+    )
+    resultado = AnalysisEngine().execute(contexto, req.previous_data)
+    return format_analysis_result(resultado)
 
 
 class ChatDecision(BaseModel):
