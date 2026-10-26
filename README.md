@@ -4,8 +4,6 @@
 
 O **Faro** é uma aplicação que permite consultar e explorar dados de arrecadação da SEFAZ em linguagem natural. O usuário faz uma pergunta, o sistema interpreta sua intenção como uma especificação estruturada, consulta dados no **Amazon Redshift** e apresenta o resultado em tabelas, gráficos **Plotly** e resumos. Depois, o usuário pode fazer perguntas de continuação sobre o resultado anterior.
 
-O projeto evoluiu de um fluxo linear — pergunta → interpretação → `QuerySpec` → SQL → gráfico — para uma solução com **API**, **validação de disponibilidade**, **conversação contextual**, **registro de interações e feedback** e **frontend separado do backend**.
-
 **Princípio arquitetural:** a interpretação em linguagem natural pode usar LLMs, mas o acesso e o processamento dos dados passam por contratos e funções do sistema. A LLM **não deve** executar SQL livre nem ser responsável pelos cálculos fiscais determinísticos. Esse é o princípio adotado pelo projeto; a garantia concreta depende da implementação dos módulos de consulta e análise, que deve continuar sendo auditada.
 
 ### Escopo verificado e limites desta documentação
