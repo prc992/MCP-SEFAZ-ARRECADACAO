@@ -4,36 +4,48 @@
 
 O **Faro** é uma aplicação que permite consultar e explorar dados de arrecadação da SEFAZ em linguagem natural. O usuário faz uma pergunta, o sistema interpreta sua intenção como uma especificação estruturada, consulta dados no **Amazon Redshift** e apresenta o resultado em tabelas, gráficos **Plotly** e resumos. Depois, o usuário pode fazer perguntas de continuação sobre o resultado anterior.
 
-**Princípio arquitetural:** a interpretação em linguagem natural pode usar LLMs, mas o acesso e o processamento dos dados passam por contratos e funções do sistema. A LLM **não deve** executar SQL livre nem ser responsável pelos cálculos fiscais determinísticos. Esse é o princípio adotado pelo projeto; a garantia concreta depende da implementação dos módulos de consulta e análise, que deve continuar sendo auditada.
+**Princípio arquitetural:** a interpretação em linguagem natural pode usar LLMs, mas o acesso e o processamento dos dados passam por contratos e funções do sistema. A LLM **não deve** executar SQL livre nem ser responsável pelos cálculos fiscais determinísticos. Na **análise sobre resultados já exibidos**, essa separação é concretizada nos módulos `analysis/`: a LLM escolhe uma intenção estruturada, o validador verifica sua fundamentação, o `AnalysisEngine` calcula e o formatador apenas apresenta o resultado. A execução de consultas novas continua sendo responsabilidade de `QuerySpec`/`query_engine.py`; a conexão exata desses caminhos com `chat_service.py` deve ser conferida nesse arquivo.
 
 
 ## 2. Arquitetura em alto nível
 
+O Faro distingue **consultar dados** (buscar um recorte no Redshift) de **analisar um resultado existente** (operar sobre a tabela já retornada). A API expõe os fluxos `/ask` e `/chat`; a execução da análise reutilizável está implementada em um pacote independente.
+
 ```mermaid
-flowchart TD
-    U[Usuário] --> UI[Playground Faro<br/>HTML + CSS + JavaScript]
-    UI -->|POST /ask| API[FastAPI<br/>main.py]
+flowchart TB
+    U[Usuário] --> UI[Playground Faro: HTML / CSS / JS]
+    UI -->|POST /ask| API[FastAPI: main.py]
     UI -->|POST /chat| API
     UI -->|POST /feedback| API
-    UI -->|GET /playground e /static| API
-
-    API --> LLM[llm_service.py<br/>Interpretar pergunta inicial]
-    LLM --> SPEC[schemas.py<br/>QuerySpec]
-    API --> CHAT[chat_service.py<br/>Decidir continuação]
-    CHAT --> SPEC
-    SPEC --> AV[data_availability_service.py<br/>Validar disponibilidade]
-    AV --> QE[query_engine.py<br/>Construir e executar consulta]
-    QE --> RS[(Amazon Redshift)]
-    RS --> QE
-    QE --> PREP[main.py<br/>Preparar tabela e resposta]
-    PREP --> CH[chart_engine.py<br/>Plotly]
-    CH --> API
-    PREP --> API
+    API --> INIT[llm_service.py: interpretação inicial]
+    INIT --> QS[QuerySpec: contrato de consulta]
+    API --> CHAT[chat_service.py: continuação contextual]
+    CHAT --> QS
+    QS --> DISP[data_availability_service.py]
+    DISP --> SQL[query_engine.py]
+    SQL <--> DB[(Amazon Redshift)]
+    SQL --> VIS[chart_engine.py + preparação de tabela]
+    VIS --> API
+    API --> LOG[interaction_logger.py: sessões / feedback]
     API --> UI
-    API --> LOG[interaction_logger.py<br/>Sessões, rastreabilidade e feedback]
+
+    subgraph AN[Motor analítico reutilizável — módulos implementados]
+        INPUT[Pergunta contextual + metadados dos dados exibidos] --> P[AnalysisPlanner]
+        CAT[DomainCatalog: contrato semântico] --> P
+        P --> V[AnalysisPlanValidator]
+        CAT --> V
+        V -->|analyze + AnalysisSpec| E[AnalysisEngine]
+        CAT --> E
+        E --> OPS[operations.py: matemática pura]
+        OPS --> E
+        E --> R[AnalysisResult]
+        R --> F[formatter.py: resposta textual]
+        CAT --> F
+    end
+    CHAT -.->|integração interna a confirmar| INPUT
 ```
 
-O diagrama representa o **fluxo implementado e visível no `main.py`**. O planejamento analítico reutilizável, desenvolvido em etapas posteriores do projeto, é tratado na seção 7 porque sua conexão exata com os endpoints depende de verificação adicional nos módulos internos.
+**Leitura do diagrama:** setas contínuas fora do subgrafo representam chamadas/rotas observadas no `main.py`; o subgrafo representa dependências verificadas diretamente nos sete arquivos do pacote analítico fornecidos. A seta pontilhada **não** afirma uma ligação inspecionada com `chat_service.py`, pois esse módulo não foi fornecido. `query`/`defer`/`clarify` são possíveis saídas do planejamento; somente planos de ação `analyze` são destinados ao motor matemático.
 
 ## 3. Organização da solução
 
@@ -41,43 +53,54 @@ O diagrama representa o **fluxo implementado e visível no `main.py`**. O planej
 
 ```text
 MCP-SEFAZ-ARRECADACAO/
-├── main.py                        # Aplicação FastAPI, rotas e composição da resposta
-├── schemas.py                     # Contratos de entrada e QuerySpec (referenciado no main.py)
-├── llm_service.py                 # Interpretação da pergunta inicial (referenciado)
-├── ask_service.py                 # Resumo textual (referenciado)
-├── chat_service.py                # Interpretação das continuações (referenciado)
-├── query_engine.py                # Execução das consultas (referenciado)
-├── chart_engine.py                # Geração dos gráficos Plotly (referenciado)
-├── metadata_service.py            # Metadados disponíveis (referenciado)
-├── data_availability_service.py   # Validação de disponibilidade temporal (referenciado)
-├── interaction_logger.py          # Sessões, interações e avaliações (referenciado)
+├── main.py                         # API FastAPI, endpoints e composição de respostas
+├── schemas.py                      # Contratos da consulta, entre eles QuerySpec
+├── llm_service.py                  # Interpretação inicial (referenciado pelo main.py)
+├── ask_service.py                  # Resumos (referenciado pelo main.py)
+├── chat_service.py                 # Roteamento das continuações (referenciado)
+├── query_engine.py                 # Consulta ao Redshift (referenciado)
+├── chart_engine.py                 # Construção dos gráficos Plotly (referenciado)
+├── metadata_service.py             # Metadados (referenciado)
+├── data_availability_service.py    # Disponibilidade do período (referenciado)
+├── interaction_logger.py           # Sessões e avaliações (referenciado)
+├── analysis/                       # Motor analítico separado (pacote inferido dos imports relativos)
+│   ├── __init__.py                 # Estrutura indicativa: arquivo não inspecionado
+│   ├── schemas.py                  # AnalysisSpec / AnalysisResult / operações / status
+│   ├── planner.py                  # AnalysisPlanner / AnalysisIntent / PlanningOutcome
+│   ├── validator.py                # AnalysisPlanValidator / ValidationDecision
+│   ├── engine.py                   # AnalysisEngine (determinístico)
+│   ├── operations.py               # Funções matemáticas puras (Decimal)
+│   ├── formatter.py                # Resposta textual sem recálculo
+│   └── domain.py                   # DomainCatalog / MetricDefinition
+├── domains/                        # Registro do catálogo de domínio (importado por analysis.domain)
+│   └── ...                         # Implementação fiscal concreta não anexada
 ├── templates/
-│   └── playground.html            # Estrutura da tela do Faro
+│   └── playground.html             # Estrutura de interface
 └── static/
-    ├── css/
-    │   └── playground.css         # Identidade visual e responsividade
-    ├── js/
-    │   └── playground.js          # Eventos, estado da UI, tabela e gráficos
-    └── images/
-        └── faro.jpeg              # Imagem original do avatar
+    ├── css/playground.css          # Identidade visual e responsividade
+    ├── js/playground.js            # Estado, interações, tabelas e Plotly
+    └── images/faro.jpeg            # Avatar original
 ```
 
-A árvore acima descreve **arquivos vistos nos pacotes de frontend** e **módulos explicitamente importados por `main.py`**; não pretende ser uma listagem exaustiva do repositório. Componentes analíticos adicionais podem estar em outros diretórios.
+A árvore combina **arquivos confirmados**, **módulos referenciados** e **diretórios inferidos dos imports relativos**. O nome físico da pasta `analysis/` é indicado pelo pacote do projeto; a árvore não substitui uma listagem real do repositório. O arquivo `analysis/schemas.py` é **distinto** do `schemas.py` da raiz: o primeiro descreve operações matemáticas sobre resultados; o segundo descreve consultas por `QuerySpec`.
 
 ### 3.2. Separação de responsabilidades
 
-| Camada | Componentes | Responsabilidade |
+| Camada | Componentes | Responsabilidade e limite |
 |---|---|---|
-| Apresentação | `templates/playground.html`, `static/css/playground.css`, `static/js/playground.js` | Capturar perguntas, exibir resultados, avatar, gráficos, tabelas e feedback |
-| API/orquestração | `main.py`, FastAPI | Expor endpoints e coordenar as etapas de cada requisição |
-| Interpretação de linguagem | `llm_service.py` | Converter perguntas iniciais em intenção/consulta estruturada |
-| Continuação contextual | `chat_service.py` | Distinguir resposta textual de uma nova consulta a partir do contexto |
-| Contratos | `schemas.py` | Representar e validar `QuerySpec` e modelos de entrada |
-| Disponibilidade | `data_availability_service.py` | Verificar existência de dados para o período antes de consultar |
-| Acesso a dados | `query_engine.py` | Gerar/executar consultas controladas e retornar dados e SQL |
-| Visualização | `chart_engine.py` | Produzir objetos Plotly, incluindo relatórios com múltiplos gráficos |
-| Apresentação dos resultados | Funções auxiliares em `main.py` e JavaScript | Adicionar totais da tabela, formatar valores e período de referência |
-| Observabilidade | `interaction_logger.py` | Registrar interações, origem, duração, IDs de sessão e avaliações |
+| Apresentação | `templates/`, `static/` | Formulário, tabela, gráficos, avatar, período, histórico e feedback; sem cálculos de negócio |
+| API/orquestração | `main.py` | Endpoints FastAPI, disponibilidade, composição do JSON e registro de eventos |
+| Interpretação de consulta | `llm_service.py`, `schemas.py` (raiz) | Produzir/validar um `QuerySpec` para acessar novos dados |
+| Roteamento contextual | `chat_service.py` | Distinguir resposta sobre dados atuais, nova consulta e outros encaminhamentos; implementação interna não anexada |
+| Planejamento analítico | `analysis/planner.py` | LLM **classifica** intenção em dados já exibidos, sem receber valores numéricos das linhas |
+| Validação analítica | `analysis/validator.py` | Confere escopo, métricas, categorias, referências do histórico; esclarece ambiguidades |
+| Contratos analíticos | `analysis/schemas.py` | `AnalysisIntent` (em planner), `AnalysisSpec`, `AnalysisResult` e códigos de status |
+| Operações e engine | `analysis/engine.py`, `analysis/operations.py` | Cálculos com `Decimal`, sem dependência da LLM nem SQL |
+| Catálogo de domínio | `analysis/domain.py` + implementação em `domains/` | Vocabulário, métricas, dimensões, unidades, aliases, formatos de comparação e totais |
+| Formatação analítica | `analysis/formatter.py` | Texto em português com valores **já calculados**, sem recalcular |
+| Disponibilidade e dados | `data_availability_service.py`, `query_engine.py` | Validar o período, construir e executar consulta controlada no Redshift |
+| Visualização | `chart_engine.py`, frontend | Figuras Plotly e tabelas, incluindo relatório ICMS/FECOP |
+| Observabilidade | `interaction_logger.py` | Sessão, rastreabilidade, feedback e duração |
 
 ## 4. Fluxos de execução
 
@@ -142,7 +165,7 @@ O navegador envia:
 - `history`: até 8 pares recentes de perguntas/respostas;
 - cabeçalhos `X-Session-ID` e `X-Parent-Interaction-ID`.
 
-A função `decidir_continuacao()` escolhe entre dois caminhos:
+A função `decidir_continuacao()` devolve uma decisão consumida por `main.py`. A API expõe ações `answer`, `query` e `error`, enquanto o planejamento analítico interno diferencia também `analyze`, `query`, `defer`, `clarify` e `invalid` (esses dois conjuntos **não são o mesmo contrato**):
 
 | `action` | Significado | Comportamento da interface |
 |---|---|---|
@@ -150,7 +173,7 @@ A função `decidir_continuacao()` escolhe entre dois caminhos:
 | `query` | É preciso executar nova consulta | Verifica disponibilidade, executa consulta e atualiza tabela/gráfico |
 | `error` | Não foi possível atender à continuação | Exibe erro no chat |
 
-O `main.py` identifica registros de resposta com origem **determinística** ou **LLM** quando a ação é `answer`, e classifica a nova consulta como `llm_query`. A estratégia interna de decisão depende do `chat_service.py`, que não foi inspecionado nesta revisão.
+O `main.py` identifica registros de resposta com origem **determinística** ou **LLM** quando a ação é `answer`, e classifica a nova consulta como `llm_query`. O contrato do motor analítico agora está documentado na seção 7, mas **a chamada exata ao `AnalysisPlanner` dentro do `chat_service.py` ainda não foi inspecionada**: não se deve assumir que todo `answer` é produzido pelo novo motor.
 
 **Estado conversacional:** na implementação atual, `conversaAtual` e `historicoChat` residem no **JavaScript do navegador**. Eles são enviados nas solicitações posteriores. Não há evidência, nesses arquivos, de um armazenamento persistente do histórico para recuperação automática entre reinicializações do navegador. O registro de interações no servidor é uma responsabilidade distinta.
 
@@ -265,47 +288,233 @@ Para o relatório de composição **ICMS/FECOP**, o texto explicativo do servido
 
 A verificação dos cálculos em sua origem requer inspeção de `query_engine.py` e/ou das consultas utilizadas; o README não considera a simples presença dessas fórmulas no resumo como teste de consistência financeira.
 
-## 7. Evolução do motor analítico e desacoplamento de domínio
+## 7. Motor analítico: etapas, contratos e separação de responsabilidades
 
-Além do fluxo operacional visto em `main.py`, o projeto possui uma evolução arquitetural em etapas, discutida durante seu desenvolvimento:
+Esta é a mudança arquitetural central do projeto. A primeira versão tratava o resultado de uma consulta como uma resposta terminal. A evolução introduziu um **motor para perguntas analíticas sobre resultados já exibidos**, preservando a possibilidade de executar nova consulta quando há mudança de recorte. Os módulos `engine.py`, `operations.py`, `schemas.py`, `planner.py`, `validator.py`, `formatter.py` e `domain.py` desta seção foram fornecidos e inspecionados.
 
-| Etapa | Componente | Objetivo arquitetural | Estado da evidência nesta revisão |
+### 7.1. Por que um segundo caminho analítico?
+
+Há duas operações de natureza diferente:
+
+| Solicitação | Exemplo | O que precisa acontecer |
+|---|---|---|
+| **Nova consulta** | “Mostre ICMS por segmento em maio de 2026” | Interpretar `QuerySpec`, verificar disponibilidade, consultar Redshift, renderizar relatório |
+| **Análise do resultado** | “Qual segmento liderou nessa tabela?” | Examinar somente os dados já exibidos; planejar uma operação admissível; executar matemática determinística; responder sem outra consulta |
+| **Mudança de escopo** | “Agora compare com abril” | Retornar à rota de consulta, pois a tabela atual não contém necessariamente abril |
+| **Ambiguidade real** | “Qual foi a variação percentual?” sem categoria identificável | Solicitar esclarecimento; não inventar categoria nem passar o cálculo para a LLM |
+
+Essa separação evita delegar ao modelo linguístico a aritmética e a decisão de quais números são verdadeiros. O planejador pode utilizar IA para interpretar *o pedido*, mas o motor calcula sobre dados definidos pelo sistema.
+
+### 7.2. Evolução implementada em três etapas
+
+| Etapa | Implementação | Decisão arquitetural | Situação observada |
 |---|---|---|---|
-| 1 | `AnalysisSpec`, `AnalysisEngine`, `AnalysisResult` | Definir contratos e cálculos analíticos independentes da formulação em linguagem natural | Reportada no histórico de implementação e testes; fontes não anexadas |
-| 2 | `AnalysisPlanner`, `AnalysisPlanValidator` | Planejar operações sobre dados e validar planos, evitando delegar cálculos à LLM | Reportada no histórico; fontes não anexadas |
-| 3 | `DomainCatalog` | Externalizar métricas, dimensões, aliases e regras fiscais para facilitar reutilização do motor em outros contextos/MCPs | Em evolução; histórico informa testes ainda pendentes/problemas |
+| **1 — Motor determinístico** | `AnalysisSpec`, `AnalysisResult`, `AnalysisEngine`, `operations.py` e `formatter.py` | Contrato estável e operações numéricas isoladas da LLM e da camada de dados | Módulos fornecidos; histórico do projeto registrou 55/55 testes e 98% de cobertura naquele estágio, **não reexecutados aqui** |
+| **2 — Planejamento e validação** | `AnalysisPlanner`, `AnalysisIntent`, `AnalysisPlanValidator`, `PlanningOutcome` | LLM interpreta intenção; validador confirma escopo e referências; apenas engine calcula | Código fornecido; histórico reportou correções de falsos negativos e testes de perguntas repetidas e follow-ups |
+| **3 — Desacoplamento de domínio** | `DomainCatalog`, `MetricDefinition`, `resolve_catalog()` e extração de primitivas reutilizáveis | Motor passa a receber vocabulário e políticas do domínio em vez de conter regras fiscais fixas | Código fornecido; histórico reportou bateria 1 aprovada e questões nas baterias 2/3, cuja conclusão não foi comprovada neste material |
 
-### 7.1. Direção arquitetural
+O objetivo **não foi refazer os cálculos** ao introduzir o catálogo, mas preservar seus contratos e comportamento enquanto o conhecimento do domínio fiscal sai do núcleo analítico.
 
-A separação pretendida é:
+### 7.3. Sequência interna de uma análise contextual
 
 ```mermaid
-flowchart LR
-    N[Pedido em linguagem natural] --> P[Planner / Validador]
-    P --> S[AnalysisSpec]
-    S --> E[AnalysisEngine<br/>operações determinísticas]
-    D[DomainCatalog<br/>configuração de domínio] --> P
-    D --> E
-    E --> R[AnalysisResult]
-    R --> V[Resposta / visualização]
+sequenceDiagram
+    actor Usuario
+    participant Chat as Orquestrador contextual
+    participant Plan as AnalysisPlanner
+    participant Val as AnalysisPlanValidator
+    participant Cat as DomainCatalog
+    participant Eng as AnalysisEngine
+    participant Ops as operations.py
+    participant Fmt as formatter.py
+
+    Usuario->>Chat: Pergunta sobre relatório existente
+    Note over Chat,Plan: Ligação concreta requer inspeção de chat_service.py
+    Chat->>Plan: pergunta + previous_spec + previous_data + history
+    Plan->>Cat: métricas / dimensões / categorias / aliases
+    Cat-->>Plan: metadados permitidos
+    Plan->>Plan: LLM produz AnalysisIntent (sem linhas numéricas)
+    Plan->>Val: validar intenção contra o contexto
+    Val->>Cat: resolver aliases / categorias
+    Cat-->>Val: vocabulário do domínio
+    alt Plano inseguro ou inconsistente
+        Val-->>Plan: retry / clarify
+        Plan-->>Chat: reclassificar uma vez ou pedir esclarecimento
+    else Necessita novo recorte
+        Val-->>Plan: query
+        Plan-->>Chat: encaminhar para nova consulta
+    else Plano analítico válido
+        Val-->>Plan: AnalysisSpec
+        Plan-->>Chat: PlanningOutcome analyze + spec
+        Chat->>Eng: AnalysisSpec + linhas previamente obtidas
+        Eng->>Cat: políticas de comparação e totais
+        Eng->>Ops: operações em Decimal
+        Ops-->>Eng: valores determinísticos
+        Eng-->>Chat: AnalysisResult
+        Chat->>Fmt: resultado + catálogo
+        Fmt-->>Chat: texto pt-BR
+        Chat-->>Usuario: resposta analítica
+    end
 ```
 
-O **`DomainCatalog`** concentra semântica específica de domínio (por exemplo, métricas fiscais e seus aliases), enquanto o **`AnalysisEngine`** deve concentrar operações analíticas reutilizáveis. O **`AnalysisPlanValidator`** verifica a adequação do plano às operações e ao contexto disponíveis.
+O diagrama apresenta a **separação de responsabilidades** suportada pelos módulos. Os detalhes do encaixe do planner e formatador no roteamento real de `chat_service.py` precisam ser confirmados no respectivo código; não são garantidos apenas por esse desenho.
 
-**Limitação de verificação:** como `main.py` chama diretamente `interpretar_pergunta_llm()`, `decidir_continuacao()` e `executar_query()`, não é possível comprovar, apenas pelos arquivos disponíveis, **em que ponto exato** esses componentes analíticos são acionados internamente. Portanto, esta seção documenta a **evolução do desenho do projeto**, e não afirma que todos os caminhos dos endpoints já percorrem obrigatoriamente o novo motor.
+### 7.4. Contratos: `QuerySpec` não é `AnalysisSpec`
 
-### 7.2. Reutilização além da arrecadação
+- `QuerySpec` (raiz, `schemas.py`) descreve **qual consulta executar**: métricas, dimensões, filtros, agrupamentos, períodos e opções de relatório. É consumido pelo caminho que acessa o Redshift.
+- `AnalysisSpec` (`analysis/schemas.py`) descreve **qual operação executar sobre os dados presentes**: `operation`, `metric`, `category`, `explicit_category`, `group_by`, `analysis_type`, `report_type`, rótulos dos períodos e `others_named`. Não importa nem depende de `QuerySpec`.
+- `AnalysisIntent` (`analysis/planner.py`) é a saída estruturada da LLM: `action`, `operation`, `metric`, `category`, `category_source`. A ação admite apenas `analyze`, `query` e `defer`; a categoria pode vir de `current`, `previous` ou `none`.
+- `PlanningOutcome` representa a saída já processada pelo planejador: `analyze`, `query`, `defer`, `invalid` ou `clarify`, com `spec`, `reason` e `question` opcionais.
+- `AnalysisResult` reúne `spec`, `status`, `metric_name`, `category`, `counterpart`, `selected_period` e `values` em `Decimal | None`. O formato de retorno permite distinguir resultados válidos de pedidos mal especificados ou dados insuficientes.
 
-O objetivo do desacoplamento é permitir novas fontes e domínios sem replicar operações matemáticas. Para isso, precisam permanecer distintos:
+**Exemplo ilustrativo de plano analítico** (não é uma consulta SQL nem uma captura real da LLM):
 
-1. **Vocabulário de negócio:** conceitos como ICMS, FECOP, receita e segmento.
-2. **Consulta às fontes:** SQL e conectores de dados específicos.
-3. **Operações analíticas:** agregação, comparação, máximo/mínimo, tendências e operações suportadas pela implementação.
-4. **Apresentação:** tabelas, gráficos e conversação com o usuário.
+```json
+{
+  "operation": "maximo",
+  "metric": "valor_arrecadado",
+  "category": null,
+  "explicit_category": null,
+  "group_by": "segmento",
+  "analysis_type": "single_period",
+  "report_type": "standard",
+  "period_1_label": null,
+  "period_2_label": null,
+  "others_named": false
+}
+```
 
-Essa reutilização é uma **meta de projeto**; a cobertura e compatibilidade entre diferentes fontes dependem de testes de integração.
+O valor de `analysis_type` é ilustrativo: o contrato `AnalysisSpec` o representa como `str`; o valor exato da análise simples deve seguir o `QuerySpec` existente. O exemplo mostra apenas a forma da mensagem enviada ao motor.
 
-> **Nota sobre o nome MCP:** o nome do repositório/projeto não demonstra, por si só, que o FastAPI publique um servidor compatível com o protocolo *Model Context Protocol*. A implementação analisada comprova uma API HTTP REST. Eventual servidor MCP, suas ferramentas e seus contratos devem ser documentados separadamente quando seus arquivos forem verificados.
+### 7.5. `AnalysisPlanner`: a LLM interpreta; não calcula
+
+O método `AnalysisPlanner.plan(req)`:
+
+1. Obtém o contexto anterior (`previous_spec`) e remove totais de `previous_data` usando `DomainCatalog.without_totals()`.
+2. Descobre indicadores **efetivamente presentes** (`metricas_disponiveis`) e categorias existentes nas linhas.
+3. Monta um payload com pergunta, períodos, agrupamento, métricas e categorias disponíveis, indicador de truncamento e **apenas a última troca conversacional**.
+4. Mascara valores monetários e percentuais da última resposta, preservando os referentes textuais (`_safe_last_turn`). **Não envia as linhas numéricas** à LLM de planejamento.
+5. Solicita a saída estruturada `AnalysisIntent` por `responses.parse(..., text_format=AnalysisIntent, store=False)`. O modelo é configurável via `ANALYSIS_PLANNER_MODEL` ou `OPENAI_MODEL`, com fallback definido no código.
+6. Submete a intenção ao `AnalysisPlanValidator`; se necessário, permite **uma única nova classificação**, totalizando no máximo duas tentativas.
+7. Retorna um `PlanningOutcome` com o plano validado, indicação de nova consulta, delegação ou esclarecimento. Se a resposta estruturada falhar, tenta recuperação estritamente limitada a intenções inequívocas.
+
+`AnalysisIntent` usa Pydantic com `extra="forbid"` e valida combinações coerentes: intenções não analíticas não podem conter operação/métrica/categoria; uma intenção `analyze` exige operação. O prompt orienta explicitamente a **não produzir SQL, cálculos ou explicações ao usuário**.
+
+O planejador não recebe as linhas numéricas; isso reduz a possibilidade de produzir resultados quantitativos sem passar pelo motor, mas não é uma prova isolada de isolamento em todos os caminhos da aplicação.
+
+### 7.6. `AnalysisPlanValidator`: validação semântica antes da execução
+
+A camada determinística entre a classificação da LLM e o motor analítico verifica, entre outros casos:
+
+- **Escopo dos dados:** `query` precisa de evidência de novo período, filtro, agrupamento ou gráfico; caso contrário, ocorre reclassificação e, persistindo incerteza, esclarecimento.
+- **Categoria fundamentada:** nomes devem corresponder a categorias retornadas. Referências de `previous` são verificadas **somente na última interação**, não em todo o histórico.
+- **Prioridade do pedido atual:** categoria mencionada explicitamente agora prevalece sobre a última resposta e sobre sugestões da LLM.
+- **Rankings globais:** “qual segmento mais arrecadou?” não deve assumir como alvo o vencedor de uma resposta anterior; categoria não sustentada pode ser descartada para rankings globais.
+- **Operações e períodos:** crescimento requer dois períodos; amplitude e comparação com “outros” são limitadas ao contexto de período único; para variação de uma categoria é necessário identificar a categoria.
+- **Ambiguidades:** pergunta sobre múltiplas categorias ou sobre a referência indefinida leva a `clarify`, não a seleção arbitrária.
+- **Correções conservadoras:** uma formulação inequívoca de diferença entre maior e menor pode ser convertida em `amplitude`. `recover_unambiguous()` contempla apenas amplitude global, valor de categoria explicitamente citada e continuação percentual com um único referente comprovável.
+
+O validador **não altera períodos, valores ou métricas da consulta** e **não executa operações numéricas**. Também não transforma automaticamente `query` em `analyze` quando há evidência de mudança de recorte. A sua saída é `ValidationDecision` (`analyze`, `query`, `defer`, `clarify` ou `retry`).
+
+Esses controles foram adicionados para combater falsos negativos e falsos positivos de interpretação durante as baterias de follow-ups, especialmente em perguntas repetidas sob contextos diferentes.
+
+### 7.7. `AnalysisEngine` e `operations.py`: matemática determinística
+
+O `AnalysisEngine.execute(spec, linhas)` recebe um `AnalysisSpec` e uma lista de registros já exibidos. Ele **não depende** de cliente Redshift, LLM, `ChatRequest` nem `QuerySpec`. Os valores aceitos são convertidos para `Decimal(str(valor))`, rejeitando booleanos e campos não numéricos.
+
+`operations.py` reúne primitivas matemáticas puras:
+
+| Função | Papel |
+|---|---|
+| `rank_values()` | Identificar valor extremo com critério de desempate definido |
+| `amplitude_values()` | Maior menos menor dentro de um conjunto de categorias |
+| `sum_others()` | Comparar categoria nomeada com a soma das demais |
+| `period_changes()` | Diferenças absolutas e variações percentuais entre dois períodos |
+| `extreme_period()` | Maior/menor período para uma categoria |
+
+O catálogo orienta como o engine identifica dimensão, linhas de totalização, campo de período e formato da comparação. O motor suporta tanto **comparação em colunas** (uma linha por categoria, colunas para período 1 e 2) quanto **comparação em linhas** (categoria + campo de período + métrica). Em ambos os casos, **pares incompletos ou duplicados são rejeitados**: valor ausente não é substituído por zero.
+
+Operações de negócio disponíveis no contrato (`AnalysisOperation`):
+
+```text
+valor · maximo · minimo · amplitude · outros
+variacao · diferenca · variacao_percentual
+crescimento_max · crescimento_min
+crescimento_max_percentual · crescimento_min_percentual
+```
+
+Regras de integridade relevantes:
+
+- No protocolo atual, `len(linhas) >= 101` gera `too_many_rows` e **bloqueia cálculo sobre possível resultado truncado**. Esse limite é uma salvaguarda do contrato vigente, não uma prova de que cada conjunto de até 100 linhas representa o universo completo.
+- Totais artificiais do relatório são excluídos antes de calcular extremos ou somas, via `without_totals()`.
+- Variação absoluta é `período_2 − período_1`; percentual tem o **primeiro período como referência**. Referência zero retorna estado/valor indefinido, não uma divisão inventada.
+- Operações que exigem categoria específica retornam estados explícitos quando ela não foi definida ou não consta da tabela.
+- Empates têm comportamento previsível conforme as primitivas (`rank_values` mantém a primeira ocorrência; `extreme_period` escolhe segundo período no empate de máximo e primeiro no empate de mínimo).
+
+**Importante:** `AnalysisEngine` não é `query_engine.py`. O primeiro calcula **a partir de resultados existentes**; o segundo consulta a **fonte de dados**.
+
+### 7.8. `AnalysisResult` e `formatter.py`: apresentação sem recálculo
+
+O motor retorna um `AnalysisResult` estruturado. Seu `status` pode ser, por exemplo, `ok`, `too_many_rows`, `invalid_data`, `metric_required`, `category_required`, `category_not_found`, `comparison_period_required`, `percent_reference_zero` ou `unsupported`.
+
+`format_analysis_result(result, catalog)` converte esses estados e valores em mensagens em português. O código utiliza:
+
+- rótulos de métricas e categorias vindos do `DomainCatalog`;
+- unidades `currency`, `count`, `number` e `percent` para apresentação;
+- formatação `pt-BR` e símbolo monetário configurado no catálogo;
+- indicação de períodos comparados;
+- mensagens explícitas para dados incompletos, referência percentual zero e categoria ausente.
+
+O **formatador não executa um segundo cálculo**: recebe os valores já produzidos pelo engine e apenas aplica formato textual.
+
+### 7.9. `DomainCatalog`: retirar regras fiscais do núcleo analítico
+
+`analysis/domain.py` define `MetricDefinition` (`label`, `aliases`, `unit`) e `DomainCatalog`, que contém:
+
+| Propriedade | Finalidade |
+|---|---|
+| `id`, `metrics`, `dimensions` | Identificar o domínio e o universo de indicadores/agrupamentos |
+| `metric_priority`, `derived_numeric_fields` | Precedência de reconhecimento e exclusão de campos derivados |
+| `category_aliases`, `dimension_aliases` | Vocabulário de categorias e dimensões usado em perguntas |
+| `report_metric_aliases` | Remapeamento de indicador conforme o tipo de relatório |
+| `long_comparison_reports`, `period_field` | Identificar comparações representadas em linhas |
+| `total_row_field`, `total_row_label` | Detectar e excluir linhas artificiais de totalização |
+| `currency_symbol`, `metric_prompt`, `metric_question` | Semântica e apresentação específicas do domínio |
+| `default_context_metric_reports` | Determinar quando é seguro reutilizar a métrica contextual |
+
+O catálogo fornece funções como `without_totals()`, `mentions_category()`, `mentioned_metrics()`, `context_metric()`, `remap_metric()`, `dimension_from_phrase()` e `planner_context()`. O objeto é `dataclass(frozen=True)` e usa `MappingProxyType` para mapas principais, reduzindo o risco de modificação acidental entre requisições.
+
+O mecanismo `resolve_catalog(catalog)` utiliza **o catálogo explícito**, quando fornecido; caso contrário carrega `default_catalog()` do módulo `domains`. Esse é o ponto de entrada para um domínio fiscal concreto. O conteúdo do catálogo fiscal (`domains/`) **não foi anexado**, então não afirmamos aqui seus aliases, métricas concretas ou regras individuais.
+
+Exemplo **conceitual** de utilização do contrato em outro domínio (não representa implementação já instalada):
+
+```python
+from analysis.domain import DomainCatalog, MetricDefinition
+from analysis.engine import AnalysisEngine
+
+catalogo = DomainCatalog(
+    id="atendimento",
+    metrics={"quantidade": MetricDefinition(label="Atendimentos", unit="count")},
+    dimensions=("unidade",),
+    currency_symbol="R$",
+)
+engine = AnalysisEngine(catalog=catalogo)
+# engine.execute(analysis_spec, linhas_da_consulta)
+```
+
+Novos domínios não exigem alterar `period_changes()` ou `rank_values()`, mas **exigem um catálogo próprio, uma origem de dados e integração/testes**. Isso prepara o motor para reutilização com outros MCPs sem afirmar que esses conectores já existem.
+
+### 7.10. Limites de segurança, decisões difíceis e não objetivos
+
+1. **Sem SQL gerado pelo motor analítico.** O motor opera sobre linhas recebidas; consulta ao Redshift pertence ao fluxo `QuerySpec`/`query_engine.py`.
+2. **Sem aritmética confiada à LLM.** O planner classifica intenções; operações estão nas funções Python com `Decimal`.
+3. **Sem adivinhar ambiguidades.** Onde escopo, categoria ou referência temporal são indeterminados, a arquitetura privilegia esclarecimento.
+4. **Sem transformar truncamento em total.** Nem `top_n` nem os 101 registros encaminhados à continuação podem ser interpretados automaticamente como universo completo.
+5. **Sem vazamento de regras fiscais para o core.** O núcleo analítico depende do contrato `DomainCatalog`; valores concretos devem estar na implementação do domínio.
+6. **Sem confundir intenção com resultado.** `AnalysisIntent` (proposta da LLM), `AnalysisSpec` (plano validado) e `AnalysisResult` (cálculo) são objetos diferentes.
+7. **Sem alegar integração fim a fim não verificada.** Os módulos novos foram inspecionados; para atestar precisamente onde `chat_service.py` instancia `AnalysisPlanner`, executa `AnalysisEngine` e chama `format_analysis_result`, é necessário ler esse arquivo.
+
+> **Nota sobre “MCP”:** o nome do repositório não demonstra, por si só, uma implementação do protocolo *Model Context Protocol*. Os arquivos aqui verificados mostram uma aplicação HTTP REST/FastAPI e um motor analítico desacoplado, projetado para reutilização em integrações futuras. Um servidor MCP, se houver, requer documentação separada de suas ferramentas e contratos.
 
 ## 8. Observabilidade, erros e segurança
 
@@ -385,12 +594,24 @@ Endereços locais padrão:
 
 ### 10.2. Testes do domínio e do motor analítico
 
+A regressão analítica deve cobrir **isoladamente** o parser/planejador, o validador, as funções matemáticas e o catálogo, além dos testes de integração com `/chat`. Os testes unitários não substituem a verificação de consultas reais.
+
+| Componente | Casos de referência |
+|---|---|
+| `operations.py` | Valores negativos/zero, rankings, empates, amplitude e variação percentual com base zero |
+| `engine.py` | Comparação longa e larga, linhas duplicadas, pares ausentes, totais artificiais, `>= 101` linhas |
+| `planner.py` | Perguntas equivalentes, classificação `analyze`/`query`/`defer`, tentativa de recálculo pela LLM, duas tentativas máximas |
+| `validator.py` | Mudança real de recorte, categorias inexistentes, múltiplos referentes, elipses de follow-up, rankings globais |
+| `domain.py` | Mudança de catálogos, aliases de indicadores/dimensões, unidade e separação entre domínios |
+| `formatter.py` | Correspondência de `AnalysisResult` com mensagens textuais, sem matemática adicional |
+
+
 - [ ] Comparar totais calculados com consultas de referência no Redshift.
 - [ ] Validar ICMS/FECOP (`C = A − B`, `D = 0,6 × C`) e arredondamentos.
 - [ ] Validar agrupamentos por decêndio, total geral e comparações entre períodos.
 - [ ] Repetir perguntas e follow-ups em contextos diferentes para verificar o plano correto.
 - [ ] Confirmar que operações determinísticas não são executadas pela LLM.
-- [ ] Executar as baterias pendentes do `DomainCatalog` e testes de compatibilidade com o comportamento anterior.
+- [ ] Retomar as baterias 2 e 3 da Etapa 3 (`DomainCatalog`), que apresentaram problemas no histórico do projeto; repetir a bateria 1 como regressão.
 
 As listas acima são **critérios recomendados**, não um atestado de que a bateria foi executada nesta revisão.
 
@@ -406,12 +627,14 @@ As listas acima são **critérios recomendados**, não um atestado de que a bate
 | Faro — Etapa 1 | Identidade visual com avatar original na abertura e no chat |
 | Faro — Etapa 2 | Separação de HTML, CSS e JavaScript do arquivo `main.py` |
 | Evolução da apresentação | Inclusão do recorte temporal explícito na tabela e nos títulos dos gráficos |
-| Motor analítico | Evolução de `AnalysisEngine`, planejamento, validação e catálogo de domínio (integração completa pendente de verificação neste README) |
+| Motor analítico — Etapa 1 | Criação de contratos `AnalysisSpec`/`AnalysisResult`, operações puras, `AnalysisEngine` e `formatter.py`; cálculos saem da LLM |
+| Motor analítico — Etapa 2 | Inclusão de `AnalysisPlanner`, intenção estruturada, `AnalysisPlanValidator`, reclassificação e esclarecimento seguro; testes de follow-ups e falsos negativos |
+| Motor analítico — Etapa 3 | `DomainCatalog`/`MetricDefinition` e extração da semântica fiscal; core reutilizável sem alteração proposital da matemática; baterias 2/3 ainda merecem revisão |
 
 ## 12. Próximos passos documentais e técnicos
 
-1. Conferir `schemas.py`, `query_engine.py`, `chat_service.py`, `llm_service.py` e os novos módulos de análise para completar contratos, dependências e fluxos internos.
-2. Documentar esquema do `DomainCatalog`, operações suportadas pelo motor e responsabilidades exatas do `AnalysisPlanValidator`.
+1. Conferir `schemas.py` (da raiz), `query_engine.py`, `chat_service.py` e `llm_service.py` para completar os contratos de consulta e confirmar os pontos exatos de integração com o pacote `analysis/`.
+2. Inspecionar a implementação do catálogo fiscal em `domains/` e finalizar as baterias 2/3 de regressão da Etapa 3.
 3. Adicionar um catálogo de erros da API, com distinção entre erros HTTP e erros retornados no corpo JSON.
 4. Formalizar configuração de ambiente (`.env.example`, dependências, credenciais e perfis de implantação), sem incluir segredos.
 5. Consolidar testes automatizados e registrar evidências de regressão.
@@ -419,4 +642,4 @@ As listas acima são **critérios recomendados**, não um atestado de que a bate
 
 ---
 
-**Resumo:** o Faro é, na implementação inspecionada, uma aplicação **FastAPI + JavaScript/HTML/CSS + Plotly + Redshift**, com interpretação em linguagem natural, `QuerySpec`, consulta estruturada, visualização contextual, chat e observabilidade. O desacoplamento do motor analítico e do catálogo de domínio amplia a direção arquitetural do projeto, mas sua integração exata deve ser confirmada nos módulos internos antes de ser descrita como completamente operacional.
+**Resumo:** o Faro reúne **FastAPI + HTML/CSS/JavaScript + Plotly + Redshift** no caminho de consulta e um **motor analítico determinístico desacoplado** (`AnalysisPlanner` → `AnalysisPlanValidator` → `AnalysisSpec` → `AnalysisEngine`/`operations.py` → `AnalysisResult` → `formatter.py`) parametrizado por `DomainCatalog`. Os sete módulos analíticos foram inspecionados; o fluxo exato de integração no roteador `chat_service.py`, a implementação fiscal em `domains/` e as baterias remanescentes devem ser verificados antes de considerar a evolução inteiramente validada.
