@@ -6,16 +6,6 @@ O **Faro** é uma aplicação que permite consultar e explorar dados de arrecada
 
 **Princípio arquitetural:** a interpretação em linguagem natural pode usar LLMs, mas o acesso e o processamento dos dados passam por contratos e funções do sistema. A LLM **não deve** executar SQL livre nem ser responsável pelos cálculos fiscais determinísticos. Esse é o princípio adotado pelo projeto; a garantia concreta depende da implementação dos módulos de consulta e análise, que deve continuar sendo auditada.
 
-### Escopo verificado e limites desta documentação
-
-Esta versão do README foi produzida a partir de:
-
-1. Documento anterior `Arquitetura.txt` (a descrição simplificada fornecida como referência histórica).
-2. `main.py` da versão atualizada do Faro.
-3. `templates/playground.html`, `static/css/playground.css`, `static/js/playground.js` e a imagem do Faro, presentes no pacote da evolução do frontend.
-4. Histórico de desenvolvimento do projeto sobre a evolução `AnalysisEngine`/`AnalysisPlanner`/`AnalysisPlanValidator`/`DomainCatalog`.
-
-**Importante:** os arquivos-fonte de `schemas.py`, `query_engine.py`, `llm_service.py`, `chat_service.py`, `analysis_engine.py` e demais módulos internos **não foram anexados nesta revisão**. Suas atribuições são documentadas a partir dos imports, chamadas e contratos visíveis no `main.py`, acrescidos do histórico do projeto. Por isso, detalhes internos e a integração efetiva do novo motor analítico não são apresentados como verificados.
 
 ## 2. Arquitetura em alto nível
 
