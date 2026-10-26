@@ -1,8 +1,5 @@
 # Faro — Agente de Dados da SEFAZ
 
-> **Documentação de arquitetura da aplicação de consulta e análise conversacional de dados de arrecadação**  
-> Revisão: 26/10/2026 · Referência: `main.py` e frontend extraído após as Etapas 1 e 2, incluindo a atualização do recorte temporal.
-
 ## 1. Visão geral
 
 O **Faro** é uma aplicação que permite consultar e explorar dados de arrecadação da SEFAZ em linguagem natural. O usuário faz uma pergunta, o sistema interpreta sua intenção como uma especificação estruturada, consulta dados no **Amazon Redshift** e apresenta o resultado em tabelas, gráficos **Plotly** e resumos. Depois, o usuário pode fazer perguntas de continuação sobre o resultado anterior.
