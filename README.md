@@ -34,7 +34,7 @@ flowchart TD
     API -->|continuação| CHAT[chat_service: decidir_continuacao]
     CHAT --> MOD{ANALYSIS_PLANNER_MODE}
     MOD -->|legacy| LEG[Parser de regras + engine / LLM conversacional]
-    MOD -->|shadow| SH[Plano semântico observado; resposta do legacy]
+    MOD -->|shadow| SH[Plano semântico observado e resposta do legacy]
     MOD -->|active| PLAN[AnalysisPlanner]
     PLAN --> VALID[AnalysisPlanValidator]
     VALID -->|analyze / AnalysisSpec| ENG[AnalysisEngine]
@@ -160,7 +160,7 @@ sequenceDiagram
     Usuario->>UI: Envia pergunta
     UI->>API: question + X-Session-ID
     API->>LLM: interpretar_pergunta_llm(question)
-    LLM->>CAT: listar_segmentos(); listar_subgrupos_receita()
+    LLM->>CAT: listar_segmentos() e listar_subgrupos_receita()
     CAT->>RSC: 2 x executar_sql(SELECT DISTINCT)
     RSC-->>CAT: Linhas convertidas para dict
     CAT-->>LLM: Listas de filtros disponíveis
@@ -546,7 +546,7 @@ sequenceDiagram
         end
     else shadow
         Chat->>Plan: executa planner para observação
-        Chat->>Chat: compara com legado; retorna legado
+        Chat->>Chat: compara com legado e retorna legado
     else legacy
         Chat->>Chat: regex -> engine ou LLM conversacional
     end
