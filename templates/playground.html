@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Faro | Agente de Dados da SEFAZ</title>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <link rel="stylesheet" href="/static/css/playground.css?v=3" />
+</head>
+<body>
+    <div class="container">
+        <header id="faroWelcome" class="faro-welcome">
+            <img class="faro-welcome-image" src="/static/images/faro.jpeg"
+                 alt="Faro, agente de dados da SEFAZ" width="168" height="168" />
+            <h1>Faro — Agente de Dados da SEFAZ</h1>
+            <p class="muted">
+                Faça perguntas sobre a arrecadação, explore os resultados e converse com os dados.
+            </p>
+        </header>
+
+        <textarea id="questionInput" placeholder="Ex.: compare ICMS e FECOP por decêndio entre setembro de 2025 e setembro de 2026"></textarea>
+        <br />
+        <button onclick="enviarPergunta()">Gerar resposta</button>
+
+        <div class="examples">
+            <div class="muted">Experimente consultas com a LLM:</div>
+            <span class="example-chip" onclick="usarExemplo('Mostre a composição de ICMS e FECOP por decêndio em dezembro de 2025.')">ICMS/FECOP · dez/2025</span>
+            <span class="example-chip" onclick="usarExemplo('Compare a composição de ICMS e FECOP por decêndio entre setembro de 2025 e setembro de 2026.')">ICMS/FECOP · set/25 × set/26</span>
+            <span class="example-chip" onclick="usarExemplo('Quanto arrecadamos de FECOP no segundo decêndio de dezembro de 2025?')">FECOP · 2º decêndio</span>
+
+
+            <span class="example-chip" onclick="usarExemplo('Mostre a arrecadação de ICMS por decêndio em setembro de 2026.')">
+                Decêndios · ICMS set/2026
+            </span>
+
+            <span class="example-chip" onclick="usarExemplo('Quanto arrecadamos de ICMS no segundo decêndio de setembro de 2026?')">
+                2º decêndio · ICMS
+            </span>
+
+            <span class="example-chip" onclick="usarExemplo('Compare a arrecadação de ICMS por decêndio entre agosto e setembro de 2026.')">
+                Decêndios · ago × set/2026
+            </span>
+
+            <span class="example-chip" onclick="usarExemplo('Compare o terceiro decêndio de agosto com o terceiro decêndio de setembro de 2026.')">
+                3º decêndio · ago × set
+            </span>
+
+            <span class="example-chip" onclick="usarExemplo('Qual foi o total arrecadado de ICMS em setembro de 2026?')">
+                Total de ICMS · set/2026
+            </span>
+
+            <span class="example-chip" onclick="usarExemplo('Quanto arrecadamos em cada decêndio de setembro de 2026?')">
+                Decêndios · todas as receitas
+            </span>
+
+            <span class="example-chip" onclick="usarExemplo('Quais segmentos arrecadaram mais com ICMS em abril de 2026?')">
+                Segmentos · ICMS abr/2026
+            </span>
+
+            <span class="example-chip" onclick="usarExemplo('Quais receitas do subgrupo ICMS arrecadaram mais em maio de 2026?')">
+                Receitas do ICMS · mai/2026
+            </span>
+
+            <span class="example-chip" onclick="usarExemplo('Quais subgrupos de receita tiveram maior arrecadação em junho de 2026?')">
+                Subgrupos · jun/2026
+            </span>
+
+            <span class="example-chip" onclick="usarExemplo('Mostre como a arrecadação de ICMS evoluiu mês a mês nos últimos seis meses.')">
+                Evolução mensal · ICMS
+            </span>
+
+        </div>
+
+        <div id="loading">Gerando resposta...</div>
+
+        <div id="errorBox"></div>
+
+        <div id="resultado" style="display:none;">
+            <div class="section">
+                <div class="label">Pergunta</div>
+                <div id="questionText"></div>
+            </div>
+
+            <div class="section">
+                <div class="label">Interpretação da pergunta (LLM)</div>
+                <p class="muted">QuerySpec executado:</p>
+                <pre id="interpretedQuery"></pre>
+            </div>
+
+            <div class="section">
+                <div class="label">SQL gerado</div>
+                <pre id="sqlText"></pre>
+            </div>                
+
+            <div class="section">
+                <div class="label">Resumo textual</div>
+                <div id="summaryText"></div>
+            </div>
+
+            <div class="section">
+                <div class="label">Dados brutos</div>
+                <pre id="rawData"></pre>
+            </div>
+
+            <div class="section">
+                <div class="label">Tabela</div>
+                <div id="tablePeriod" class="period-description" aria-live="polite"></div>
+                <div id="tableContainer"></div>
+            </div>                
+
+            <div class="section">
+                <div class="label">Gráficos</div>
+                <div id="chartPeriod" class="period-description" aria-live="polite"></div>
+                <div id="chartsContainer" class="charts-grid" style="display:none;"></div>
+                <div id="chart"></div>
+                <div id="initialFeedback" class="feedback-row feedback-inicial" role="group" aria-label="Avaliação do relatório"></div>
+            </div>
+            <div class="section">
+                <div class="label">Continue conversando com os dados</div>
+                <p class="muted">Pergunte sobre o resultado ou solicite outra comparação, filtro ou gráfico.</p>
+                <div id="chatMessages" aria-live="polite"></div>
+                <div class="chat-input-row">
+                    <input id="chatQuestion" type="text"
+                        placeholder="Ex.: qual decêndio cresceu mais? Ou compare com o mês anterior"
+                        onkeydown="if(event.key==='Enter') enviarContinuacao();" />
+                    <button id="chatSend" onclick="enviarContinuacao()">Enviar</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/playground.js?v=3" defer></script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+FARO — Ajuste do recorte temporal em tabelas e gráficos
+
+BASE: versão validada da Etapa 2.
+
+ALTERAÇÕES:
+- Tabela e seção Gráficos mostram o período obtido do QuerySpec retornado pela API.
+- O título interno de cada figura Plotly inclui um subtítulo com o período.
+- Comparações mostram os dois períodos; intervalos parciais preservam datas exatas.
+- O período é atualizado também quando uma continuação gera nova consulta.
+- Não alteramos main.py, endpoints, cálculos, SQL, filtros ou estruturas de dados.
+
+INSTALAÇÃO:
+1) Faça backup dos arquivos atuais static/js/playground.js,
+   static/css/playground.css e templates/playground.html.
+2) Extraia este pacote na raiz do projeto, mesclando/substituindo os arquivos.
+3) Mantenha uvicorn main:app --reload em execução.
+4) Atualize /playground com Ctrl+F5.
+
+TESTES:
+1) ICMS/FECOP por decêndio em dezembro de 2025:
+   "Período: dezembro de 2025" na tabela e nos quatro gráficos.
+2) Compare ICMS/FECOP em setembro de 2025 e setembro de 2026:
+   "Comparação: setembro de 2025 × setembro de 2026".
+3) Intervalo parcial: datas exatas, sem chamar o intervalo de mês completo.
+4) Follow-up que muda o mês: o novo período deve substituir o anterior.
+5) Verifique tabela, gráficos, feedback e avatar do Faro como antes.
+
+NOTA: Este pacote foi gerado da Etapa 2 entregue nesta conversa.
