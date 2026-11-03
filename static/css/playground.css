@@ -77,6 +77,69 @@ body {
             font-weight: bold;
             margin-bottom: 8px;
         }
+        /* Painel progressivo: resultados visíveis; detalhes sob demanda. */
+        .query-details {
+            background: #fff;
+            padding: 0;
+            overflow: hidden;
+        }
+        .details-summary {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 16px;
+            cursor: pointer;
+            list-style: none;
+            user-select: none;
+        }
+        .details-summary::-webkit-details-marker { display: none; }
+        .details-summary:hover { background: #f8fafc; }
+        .details-summary:focus-visible {
+            outline: 3px solid #86bca4;
+            outline-offset: -3px;
+            border-radius: 9px;
+        }
+        .details-toggle {
+            display: inline-grid;
+            place-items: center;
+            width: 26px;
+            height: 26px;
+            flex: 0 0 26px;
+            border-radius: 7px;
+            background: #e7f3ed;
+            color: #14532d;
+            font-size: 22px;
+            font-weight: 500;
+            line-height: 1;
+        }
+        .details-toggle::before { content: "+"; }
+        .query-details[open] .details-toggle::before { content: "−"; }
+        .details-title { font-weight: 700; color: #143d2b; }
+        .details-hint { margin-left: auto; font-size: 13px; color: #64748b; }
+        .query-details[open] .details-summary { border-bottom: 1px solid #e5e7eb; }
+        .query-details-body { padding: 0 18px 18px; }
+        .details-item { padding: 15px 0; border-bottom: 1px solid #e5e7eb; }
+        .details-item:last-child { border-bottom: 0; padding-bottom: 0; }
+        .details-item .label { margin-bottom: 8px; }
+        .details-item pre { max-height: 330px; overflow: auto; }
+        @media (max-width: 720px) {
+            .details-summary { flex-wrap: wrap; gap: 10px; }
+            .details-hint { margin: -2px 0 0 38px; flex-basis: calc(100% - 38px); }
+        }
+
+        /* Aviso visível sobre janela temporal ajustada ou mês parcialmente carregado. */
+        .availability-notice {
+            margin: 0 0 16px;
+            padding: 12px 15px;
+            background: #f0f9f4;
+            color: #245b42;
+            border: 1px solid #b9dfc9;
+            border-radius: 9px;
+            line-height: 1.45;
+            font-size: 13px;
+        }
+        .availability-notice[hidden] { display: none; }
+
         /* Recorte temporal visível independentemente da pergunta original. */
         .period-description {
             color: #475569;
@@ -236,3 +299,30 @@ body {
             .container { width: 100%; padding: 12px; }
             .data-table th, .data-table td { padding: 9px 10px; }
         }
+
+
+/* Fluxos explícitos após um relatório: chat contextual, nova análise ou PDF. */
+[hidden] { display: none !important; }
+.action-panel { background: #f6faf8; border-color: #cddfd3; }
+.action-panel > .muted { margin: 4px 0 14px; }
+.action-buttons { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.action-buttons button { margin: 0; min-height: 43px; }
+.action-choice { background: #fff; color: #164531; border: 1px solid #aac8b7; font-weight: 600; }
+.action-choice:hover { background: #ebf5ef; }
+.action-choice[aria-pressed="true"] { color: white; background: #175638; border-color: #175638; }
+.action-choice:focus-visible, .download-report:focus-visible { outline: 3px solid #7da997; outline-offset: 3px; }
+.download-report { background: #263746; margin-left: auto !important; }
+.download-report:hover { background: #172b3a; }
+.action-status { min-height: 0; color: #475569; font-size: 13px; }
+.action-status:not(:empty) { margin-top: 10px; }
+.action-status.error { color: #a52929; }
+.new-analysis-panel { margin-top: 18px; padding-top: 16px; border-top: 1px solid #ccded1; }
+.new-analysis-panel .muted { margin: 4px 0 12px; }
+.new-analysis-panel textarea { min-height: 85px; }
+.new-analysis-panel button { background: #175638; }
+#chatSection { background: #f8fbf9; }
+@media (max-width: 680px) {
+    .action-buttons { flex-direction: column; align-items: stretch; }
+    .action-buttons button { width: 100%; }
+    .download-report { margin-left: 0 !important; }
+}

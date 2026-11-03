@@ -2,7 +2,7 @@
 
 A presença de registros não comprova o fechamento contábil do mês.
 """
-from datetime import date
+from datetime import date, datetime
 from threading import Lock
 from time import monotonic
 
@@ -31,17 +31,86 @@ def _consultar_meses():
     return executar_sql(sql)
 
 
-def meses_disponiveis():
-    """Resultado em cache por 10 min, permitindo novas cargas sem reiniciar a API."""
+def cobertura_mensal() -> dict[str, date]:
+    """Última data observada por mês, com cache compartilhado por dez minutos.
+
+    Não representa confirmação de fechamento contábil.
+    """
     global _cache_data, _cache_until
     with _cache_lock:
         if _cache_data is not None and monotonic() < _cache_until:
             return _cache_data
-        linhas = _consultar_meses()
-        meses = {str(row['mes']) for row in linhas if row.get('mes') and int(row.get('qtd_registros') or 0) > 0}
-        _cache_data = meses
+        cobertura = {}
+        for row in _consultar_meses():
+            mes = row.get('mes')
+            if not mes or int(row.get('qtd_registros') or 0) <= 0:
+                continue
+            ultima = row.get('ultima_data')
+            if isinstance(ultima, datetime):
+                ultima = ultima.date()
+            elif not isinstance(ultima, date):
+                ultima = date.fromisoformat(str(ultima)[:10])
+            cobertura[str(mes)] = ultima
+        _cache_data = cobertura
         _cache_until = monotonic() + _CACHE_SECONDS
-        return meses
+        return cobertura
+
+
+def meses_disponiveis():
+    """Interface legada: conjunto dos meses com registros, sem presumir fechamento."""
+    return set(cobertura_mensal())
+
+
+def resolver_periodo_serie(spec: QuerySpec) -> tuple[QuerySpec, str | None]:
+    """Resolve somente séries relativas sem datas explícitas.
+
+    Produz N meses CONSECUTIVOS até o mês com dados mais recente; jamais pula
+    uma lacuna intermediária ou reinterpreta datas explicitamente informadas.
+    O QuerySpec original não é modificado.
+    """
+    if (spec.analysis_type != 'time_series' or spec.months_back is None
+            or spec.start_date is not None or spec.end_date is not None):
+        return spec, None
+    if spec.months_back < 1:
+        raise ValueError('months_back deve ser positivo.')
+
+    cobertura = cobertura_mensal()
+    hoje = date.today()
+    mes_corrente = hoje.strftime('%Y-%m')
+    meses_validos = [mes for mes in cobertura if mes <= mes_corrente]
+    if not meses_validos:
+        # Mantém a validação normal para produzir erro de disponibilidade.
+        return spec, None
+
+    mes_final = max(meses_validos)
+    fim = min(cobertura[mes_final], hoje)
+    indice_mes_final = fim.year * 12 + (fim.month - 1)
+    indice_inicio = indice_mes_final - (spec.months_back - 1)
+    inicio = date(indice_inicio // 12, indice_inicio % 12 + 1, 1)
+    resolvido = spec.model_copy(update={
+        'start_date': inicio.isoformat(),
+        'end_date': fim.isoformat(),
+    })
+    periodo = f'{inicio:%m/%Y} a {fim:%m/%Y}'
+    if mes_final < mes_corrente:
+        aviso = (f'O mês corrente ({mes_corrente}) ainda não possui registros. '
+                 f'Os {spec.months_back} meses consecutivos mais recentes foram '
+                 f'ajustados para {periodo}, com dados até {fim:%d/%m/%Y}.')
+    else:
+        aviso = (f'A série de {spec.months_back} meses inclui o mês corrente, '
+                 f'com registros disponíveis até {fim:%d/%m/%Y}. '
+                 'O mês corrente é parcial.')
+    return resolvido, aviso + ' A existência de registros não comprova fechamento contábil.'
+
+
+def preparar_consulta_temporal(spec: QuerySpec) -> tuple[QuerySpec, dict]:
+    """Resolve o intervalo e valida o MESMO QuerySpec usado na execução SQL."""
+    resolvido, aviso_ajuste = resolver_periodo_serie(spec)
+    disponibilidade = validar_disponibilidade(resolvido)
+    if aviso_ajuste and disponibilidade['disponivel']:
+        # A mensagem ajustada já descreve a parcialidade do mês corrente.
+        disponibilidade['aviso'] = aviso_ajuste
+    return resolvido, disponibilidade
 
 
 def _meses_entre(inicio: date, fim: date):
@@ -60,6 +129,10 @@ def _intervalos(spec: QuerySpec):
             (spec.period_1_label or 'período 1', spec.period_1_start, spec.period_1_end),
             (spec.period_2_label or 'período 2', spec.period_2_start, spec.period_2_end),
         ]
+    # Datas resolvidas ou explícitas têm prioridade sobre months_back.
+    # Isso mantém a validação idêntica ao intervalo efetivamente consultado.
+    if spec.analysis_type == 'time_series' and (spec.start_date or spec.end_date):
+        return [('série temporal', spec.start_date, spec.end_date)]
     if spec.analysis_type == 'time_series' and spec.months_back:
         if spec.months_back < 1:
             raise ValueError('months_back deve ser positivo.')

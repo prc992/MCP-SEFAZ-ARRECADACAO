@@ -188,6 +188,7 @@ function usarExemplo(texto) {
 
         let conversaAtual = null;
         let historicoChat = [];
+        let modoInteracao = null; // null | chat | new; escolha explícita do usuário
         let sessaoId = (typeof crypto !== "undefined" && crypto.randomUUID)
             ? crypto.randomUUID() : null;
         let ultimaInteracaoId = null;
@@ -237,7 +238,7 @@ function usarExemplo(texto) {
             }
         }
 
-        function adicionarMensagem(texto, classe, interactionId=null) {
+        function adicionarMensagem(texto, classe, interactionId=null, rolar=true) {
             const painel = document.getElementById("chatMessages");
             const mensagem = document.createElement("div");
             mensagem.className = "chat-message " + classe;
@@ -266,16 +267,132 @@ function usarExemplo(texto) {
             } else {
                 painel.appendChild(mensagem);
             }
-            mensagem.scrollIntoView({behavior:"smooth", block:"nearest"});
+            if (rolar) mensagem.scrollIntoView({behavior:"smooth", block:"nearest"});
+        }
+
+        function sincronizarAcoes() {
+            const podeInteragir = Boolean(conversaAtual);
+            document.getElementById("actionPanel").hidden = !podeInteragir;
+            const chatAberto = podeInteragir && modoInteracao === "chat";
+            const novaAberta = podeInteragir && modoInteracao === "new";
+            document.getElementById("chatSection").hidden = !chatAberto;
+            document.getElementById("newAnalysisPanel").hidden = !novaAberta;
+            document.getElementById("chooseChat").setAttribute("aria-pressed", String(chatAberto));
+            document.getElementById("chooseNew").setAttribute("aria-pressed", String(novaAberta));
+        }
+
+        function escolherAcao(tipo) {
+            if (!conversaAtual || !["chat", "new"].includes(tipo)) return;
+            modoInteracao = modoInteracao === tipo ? null : tipo;
+            sincronizarAcoes();
+            if (modoInteracao === "chat") document.getElementById("chatQuestion").focus();
+            if (modoInteracao === "new") document.getElementById("newAnalysisQuestion").focus();
+        }
+
+        async function enviarNovaAnalise() {
+            const caixa = document.getElementById("newAnalysisQuestion");
+            const pergunta = caixa.value.trim();
+            if (!pergunta) {
+                caixa.focus();
+                document.getElementById("pdfStatus").textContent = "Digite a pergunta da nova análise.";
+                return;
+            }
+            document.getElementById("questionInput").value = pergunta;
+            await enviarPergunta(); // /ask: sem previous_spec, previous_data ou history
+        }
+
+        async function baixarRelatorioPdf() {
+            const status = document.getElementById("pdfStatus");
+            const botao = document.getElementById("downloadPdf");
+            if (!conversaAtual) {
+                status.textContent = "Faça uma consulta antes de exportar.";
+                return;
+            }
+            botao.disabled = true;
+            status.classList.remove("error");
+            status.textContent = "Preparando tabela e gráficos para o PDF...";
+            try {
+                const tabela = document.querySelector("#tableContainer table.data-table");
+                if (!tabela) throw new Error("A tabela do relatório não está disponível.");
+                const columns = Array.from(tabela.querySelectorAll("thead th"), th => th.textContent.trim());
+                const rows = Array.from(tabela.querySelectorAll("tbody tr"), tr =>
+                    Array.from(tr.querySelectorAll("td"), td => td.textContent.trim()));
+
+                const varios = document.getElementById("chartsContainer").style.display !== "none";
+                const elementos = varios
+                    ? Array.from(document.querySelectorAll("#chartsContainer .chart-panel"))
+                    : [document.getElementById("chart")];
+                const charts = [];
+                for (const elemento of elementos) {
+                    const grafico = elemento.matches(".js-plotly-plot") ? elemento : elemento.querySelector(".js-plotly-plot");
+                    if (!grafico) throw new Error("Não foi possível localizar um dos gráficos Plotly.");
+                    const image = await Plotly.toImage(grafico, {
+                        format: "png", width: varios ? 1024 : 1200,
+                        height: varios ? 630 : 660, scale: 1.5
+                    });
+                    if (!image.startsWith("data:image/png;base64,")) {
+                        throw new Error("A captura de um gráfico não retornou imagem PNG.");
+                    }
+                    charts.push({title: "Gráfico " + (charts.length + 1), image});
+                }
+                if (!charts.length) throw new Error("Nenhum gráfico disponível para exportação.");
+                const aviso = document.getElementById("availabilityNotice");
+                const request = {
+                    question: document.getElementById("questionText").textContent.trim(),
+                    period: document.getElementById("tablePeriod").textContent.trim(),
+                    notice: aviso.hidden ? null : aviso.textContent.trim(),
+                    columns, rows, charts
+                };
+                status.textContent = "Gerando PDF...";
+                const resposta = await fetch("/export/pdf", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify(request)
+                });
+                if (!resposta.ok) {
+                    let detalhe = "HTTP " + resposta.status;
+                    try {
+                        const erro = await resposta.json();
+                        if (erro.detail && typeof erro.detail === "string") detalhe = erro.detail;
+                    } catch (_) { /* resposta não JSON */ }
+                    throw new Error(detalhe);
+                }
+                const pdf = await resposta.blob();
+                if (pdf.size < 100 || !pdf.type.includes("pdf")) {
+                    throw new Error("A API não retornou um PDF válido.");
+                }
+                const url = URL.createObjectURL(pdf);
+                const link = document.createElement("a");
+                link.href = url;
+                link.download = "faro_relatorio.pdf";
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 15000);
+                status.textContent = "PDF preparado para download.";
+            } catch (erro) {
+                status.classList.add("error");
+                status.textContent = "Não foi possível exportar o PDF: " + erro.message;
+            } finally {
+                botao.disabled = false;
+            }
         }
 
         async function atualizarRelatorio(data) {
                 document.getElementById("resultado").style.display = "block";
+                document.getElementById("queryDetails").open = false;
+                document.getElementById("tableSection").hidden = false;
+                document.getElementById("chartsSection").hidden = false;
+                sincronizarAcoes();
                 document.getElementById("questionText").textContent = data.question || document.getElementById("questionText").textContent;
                 document.getElementById("interpretedQuery").textContent = JSON.stringify(data.query_interpretada, null, 2);
                 document.getElementById("sqlText").textContent = data.sql || "SQL não disponível.";
                 document.getElementById("summaryText").textContent = (data.summary || "Sem resumo disponível.")
                     + (data.aviso_disponibilidade ? " " + data.aviso_disponibilidade : "");
+                const notice = document.getElementById("availabilityNotice");
+                const noticeText = (data.aviso_disponibilidade || "").trim();
+                notice.textContent = noticeText;
+                notice.hidden = !noticeText;
                 document.getElementById("rawData").textContent = JSON.stringify(data.dados_brutos || [], null, 2);
                 const periodoRelatorio = obterPeriodoRelatorio(data.query_interpretada);
                 document.getElementById("tablePeriod").textContent = periodoRelatorio;
@@ -325,6 +442,7 @@ function usarExemplo(texto) {
             adicionarMensagem(pergunta, "chat-user");
             const botao = document.getElementById("chatSend");
             botao.disabled = true;
+            document.getElementById("downloadPdf").disabled = true;
             botao.textContent = "Analisando...";
             try {
                 const resposta = await fetch("/chat", {
@@ -351,7 +469,9 @@ function usarExemplo(texto) {
                     dados.question = pergunta;
                     await atualizarRelatorio(dados);
                     conversaAtual = dados;
-                    adicionarMensagem(dados.answer || "Consulta atualizada.", "chat-assistant", dados.interaction_id);
+                    document.getElementById("pdfStatus").textContent = "";
+                    adicionarMensagem(dados.answer || "Consulta atualizada.", "chat-assistant", dados.interaction_id, false);
+                    document.getElementById("tableSection").scrollIntoView({behavior:"smooth", block:"start"});
                 } else if (dados.action === "answer") {
                     adicionarMensagem(dados.answer, "chat-assistant", dados.interaction_id);
                 } else {
@@ -363,6 +483,7 @@ function usarExemplo(texto) {
                 adicionarMensagem("Erro ao continuar: " + erro.message, "chat-error");
             } finally {
                 botao.disabled = false;
+                document.getElementById("downloadPdf").disabled = false;
                 botao.textContent = "Enviar";
             }
         }
@@ -377,12 +498,17 @@ function usarExemplo(texto) {
 
             esconderErro();
             conversaAtual = null;
+            document.getElementById("actionPanel").hidden = true;
+            document.getElementById("chatSection").hidden = true;
             ultimaInteracaoId = null;
             document.getElementById("initialFeedback").replaceChildren();
             mostrarLoading();
             document.getElementById("resultado").style.display = "none";
+            document.getElementById("queryDetails").open = false;
             document.getElementById("tablePeriod").textContent = "";
             document.getElementById("chartPeriod").textContent = "";
+            document.getElementById("availabilityNotice").hidden = true;
+            document.getElementById("availabilityNotice").textContent = "";
 
             try {
                 const response = await fetch("/ask", {
@@ -405,6 +531,9 @@ function usarExemplo(texto) {
 
                 if (data.error) {
                     document.getElementById("resultado").style.display = "block";
+                    document.getElementById("tableSection").hidden = true;
+                    document.getElementById("chartsSection").hidden = true;
+                    document.getElementById("chatSection").hidden = true;
                     document.getElementById("questionText").textContent = data.question || "";
                     document.getElementById("interpretedQuery").textContent = data.query_interpretada
                         ? JSON.stringify(data.query_interpretada, null, 2)
@@ -418,8 +547,9 @@ function usarExemplo(texto) {
                     Plotly.purge("chart");
                     document.getElementById("chartsContainer").replaceChildren();
                     mostrarErro(data.error);
-                    // Sem gráficos, reposiciona a avaliação após o resumo do erro.
-                    document.getElementById("summaryText").after(document.getElementById("initialFeedback"));
+                    document.getElementById("initialQueryPanel").hidden = false;
+                    // Sem gráficos, mantém o feedback visível fora dos detalhes recolhidos.
+                    document.getElementById("queryDetails").after(document.getElementById("initialFeedback"));
                     criarFeedback(data.interaction_id, document.getElementById("initialFeedback"));
                     return;
                 }
@@ -428,15 +558,22 @@ function usarExemplo(texto) {
                 }
 
                 conversaAtual = data;
+                modoInteracao = null;
+                document.getElementById("initialQueryPanel").hidden = true;
+                document.getElementById("newAnalysisQuestion").value = "";
+                document.getElementById("pdfStatus").textContent = "";
                 document.getElementById("faroWelcome").hidden = true;
                 historicoChat = [];
                 document.getElementById("chatMessages").replaceChildren();
                 await atualizarRelatorio(data);
                 document.getElementById("chart").after(document.getElementById("initialFeedback"));
                 criarFeedback(data.interaction_id, document.getElementById("initialFeedback"));
-                adicionarMensagem("Resultado carregado. Você pode fazer perguntas ou pedir outra análise.", "chat-assistant");
+                // A conversa só aparece se o usuário escolher essa ação.
+
+                document.getElementById("tableSection").scrollIntoView({behavior:"smooth", block:"start"});
 
             } catch (error) {
+                document.getElementById("initialQueryPanel").hidden = false;
                 mostrarErro(
                     "Não consegui interpretar ou processar sua pergunta. " +
                     "Verifique a pergunta e tente novamente. " +

@@ -27,16 +27,18 @@ def executar_serie_temporal(spec: QuerySpec):
 
     where_clauses = []
 
-    if spec.months_back:
+    # Um intervalo explícito/resolvido prevalece sobre a janela relativa.
+    # Não combinar os dois filtros: isso reduziria uma série de seis meses
+    # para cinco quando o mês atual ainda não possui registros.
+    if spec.start_date is not None or spec.end_date is not None:
+        if spec.start_date:
+            where_clauses.append(f"a.dat_pagamento >= '{spec.start_date}'")
+        if spec.end_date:
+            where_clauses.append(f"a.dat_pagamento <= '{spec.end_date}'")
+    elif spec.months_back:
         where_clauses.append(
             f"a.dat_pagamento >= DATEADD(month, -{spec.months_back - 1}, DATE_TRUNC('month', CURRENT_DATE))"
         )
-
-    if spec.start_date:
-        where_clauses.append(f"a.dat_pagamento >= '{spec.start_date}'")
-
-    if spec.end_date:
-        where_clauses.append(f"a.dat_pagamento <= '{spec.end_date}'")
 
     if spec.segmento:
         where_clauses.append(f"LOWER(a.dsc_segmento) LIKE LOWER('%{spec.segmento}%')")

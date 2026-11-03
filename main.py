@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, Header, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from schemas import QuerySpec, AskRequest
@@ -8,9 +8,10 @@ from chart_engine import gerar_plotly_figure, gerar_graficos_icms_fecop
 from metadata_service import get_metadata
 from ask_service import gerar_summary
 from llm_service import interpretar_pergunta_llm
-from data_availability_service import validar_disponibilidade
+from data_availability_service import preparar_consulta_temporal
 from chat_service import ChatRequest, decidir_continuacao
 from interaction_logger import novo_id, validar_id, registrar_interacao, registrar_feedback
+from pdf_report import PdfReportRequest, gerar_pdf_relatorio
 from pydantic import BaseModel
 from typing import Literal
 import time
@@ -109,7 +110,7 @@ def metadata():
 @app.post("/grafico")
 def gerar_grafico(spec: QuerySpec):
     try:
-        disponibilidade = validar_disponibilidade(spec)
+        spec, disponibilidade = preparar_consulta_temporal(spec)
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Não foi possível verificar a disponibilidade dos dados no Redshift.") from exc
     if not disponibilidade["disponivel"]:
@@ -123,6 +124,8 @@ def gerar_grafico(spec: QuerySpec):
     return {
         "title": f"{spec.metric} por {spec.group_by}",
         "chart_type": spec.chart_type,
+        "query_interpretada": spec.model_dump(),
+        "aviso_disponibilidade": disponibilidade.get("aviso"),
         "dados_brutos": dados,
         "dados_tabela": preparar_dados_tabela(dados, spec),
         "plotly_json": plotly_json,
@@ -133,7 +136,7 @@ def gerar_grafico(spec: QuerySpec):
 @app.post("/grafico-html", response_class=HTMLResponse)
 def gerar_grafico_html(spec: QuerySpec):
     try:
-        disponibilidade = validar_disponibilidade(spec)
+        spec, disponibilidade = preparar_consulta_temporal(spec)
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Não foi possível verificar a disponibilidade dos dados no Redshift.") from exc
     if not disponibilidade["disponivel"]:
@@ -150,6 +153,21 @@ def gerar_grafico_html(spec: QuerySpec):
         return HTMLResponse(content="<html><body>" + "".join(blocos) + "</body></html>")
     fig = gerar_plotly_figure(dados, spec)
     return HTMLResponse(content=fig.to_html(full_html=True))
+
+
+@app.post("/export/pdf")
+def exportar_pdf(req: PdfReportRequest):
+    """Exporta tabela e gráficos da resposta já exibida, sem executar novo SQL."""
+    try:
+        documento = gerar_pdf_relatorio(req)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail="Exportação requer reportlab e Pillow no servidor.") from exc
+    return Response(content=documento, media_type="application/pdf", headers={
+        "Content-Disposition": 'attachment; filename="faro_relatorio.pdf"',
+        "Cache-Control": "no-store",
+    })
 
 
 class FeedbackRequest(BaseModel):
@@ -193,7 +211,7 @@ def ask(req: AskRequest, request: Request, x_session_id: str | None = Header(def
             "error": f"Falha na interpretação por LLM ({type(exc).__name__}).",
             "error_type": "llm_failed"})
     try:
-        disponibilidade = validar_disponibilidade(spec)
+        spec, disponibilidade = preparar_consulta_temporal(spec)
     except Exception:
         return finalizar({"question": req.question,
             "query_interpretada": spec.model_dump(),
@@ -250,7 +268,7 @@ def chat(req: ChatRequest, request: Request, x_session_id: str | None = Header(d
     spec = decisao.query_spec
     origem = "llm_query"
     try:
-        disponibilidade = validar_disponibilidade(spec)
+        spec, disponibilidade = preparar_consulta_temporal(spec)
     except Exception:
         return finalizar({"action": "error", "error":
                 "Não foi possível consultar a disponibilidade dos dados no Redshift."})
