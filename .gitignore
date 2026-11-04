@@ -1,6 +1,14 @@
 .venv/
 __pycache__/
-*.pyc
 .env
 # Auditoria local de interações - nunca versionar os JSONL
 logs_interacoes/
+
+# Logs e relatórios de observabilidade
+logs_interacoes/
+relatorio_logs/
+*.jsonl
+
+# Configurações e segredos
+.env
+.env.*

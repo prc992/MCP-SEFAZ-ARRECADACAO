@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Faro | Agente de Dados da SEFAZ</title>
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-    <link rel="stylesheet" href="/static/css/playground.css?v=5" />
+    <link rel="stylesheet" href="/static/css/playground.css?v=6" />
 </head>
 <body>
     <div class="container">
@@ -22,6 +22,71 @@
         <textarea id="questionInput" placeholder="Ex.: compare ICMS e FECOP por decêndio entre setembro de 2025 e setembro de 2026"></textarea>
         <br />
         <button onclick="enviarPergunta()">Gerar resposta</button>
+
+        <section class="faro-scope" aria-labelledby="scopeTitle">
+            <div class="faro-scope-heading">
+                <div>
+                    <div class="faro-scope-kicker">GUIA RÁPIDO</div>
+                    <h2 id="scopeTitle">O que posso analisar com o Faro?</h2>
+                    <p>Explore a arrecadação em diferentes períodos, descubra de onde vêm os valores e compare resultados — sem precisar escrever SQL.</p>
+                </div>
+                <div class="faro-scope-period" aria-label="Cobertura aproximada da base">
+                    <span class="faro-scope-period-icon" aria-hidden="true">◷</span>
+                    <div><strong>Últimos 2 anos</strong><span>de dados disponíveis*</span></div>
+                </div>
+            </div>
+            <div class="faro-scope-tags" aria-label="Temas disponíveis">
+                <span>Evolução no tempo</span><span>Comparações</span><span>Decêndios</span>
+                <span>Receitas e subgrupos</span><span>Segmentos econômicos</span><span>ICMS e FECOP</span>
+            </div>
+            <details class="faro-scope-details" id="scopeDetails">
+                <summary><span>Conhecer as análises disponíveis</span><span class="faro-scope-plus" aria-hidden="true"></span></summary>
+                <div class="faro-scope-body">
+                    <div class="faro-scope-grid">
+                        <article class="faro-scope-card">
+                            <div class="faro-scope-number">01 · EVOLUÇÃO</div>
+                            <h3>Como a arrecadação mudou?</h3>
+                            <p>Acompanhe valores por mês ou por dia e visualize tendências em gráficos.</p>
+                            <button type="button" class="faro-scope-example" onclick="usarExemplo('Mostre como a arrecadação de ICMS evoluiu mês a mês nos últimos seis meses.')">Experimentar evolução mensal <span aria-hidden="true">↗</span></button>
+                        </article>
+                        <article class="faro-scope-card">
+                            <div class="faro-scope-number">02 · COMPARAÇÃO</div>
+                            <h3>Qual período arrecadou mais?</h3>
+                            <p>Compare meses ou outros intervalos definidos por você, com valores lado a lado.</p>
+                            <button type="button" class="faro-scope-example" onclick="usarExemplo('Compare a arrecadação de ICMS por decêndio entre agosto e setembro de 2026.')">Experimentar comparação <span aria-hidden="true">↗</span></button>
+                        </article>
+                        <article class="faro-scope-card">
+                            <div class="faro-scope-number">03 · DECÊNDIOS</div>
+                            <h3>Como foi cada parte do mês?</h3>
+                            <p>Analise o 1º, 2º e 3º decêndios conforme a classificação oficial dos dados.</p>
+                            <button type="button" class="faro-scope-example" onclick="usarExemplo('Quanto arrecadamos de ICMS no segundo decêndio de setembro de 2026?')">Experimentar decêndios <span aria-hidden="true">↗</span></button>
+                        </article>
+                        <article class="faro-scope-card">
+                            <div class="faro-scope-number">04 · RECEITAS</div>
+                            <h3>Quais receitas se destacaram?</h3>
+                            <p>Explore a arrecadação por receita, código da receita ou subgrupo, como ICMS.</p>
+                            <button type="button" class="faro-scope-example" onclick="usarExemplo('Quais receitas do subgrupo ICMS arrecadaram mais em maio de 2026?')">Experimentar receitas <span aria-hidden="true">↗</span></button>
+                        </article>
+                        <article class="faro-scope-card">
+                            <div class="faro-scope-number">05 · SEGMENTOS</div>
+                            <h3>Quem mais contribuiu?</h3>
+                            <p>Identifique e compare os segmentos econômicos com maior arrecadação.</p>
+                            <button type="button" class="faro-scope-example" onclick="usarExemplo('Quais segmentos arrecadaram mais com ICMS em abril de 2026?')">Experimentar segmentos <span aria-hidden="true">↗</span></button>
+                        </article>
+                        <article class="faro-scope-card">
+                            <div class="faro-scope-number">06 · DEMONSTRATIVO</div>
+                            <h3>Como se compõem ICMS e FECOP?</h3>
+                            <p>Consulte os indicadores fiscais A, B, C e D, inclusive por decêndio e por período.</p>
+                            <button type="button" class="faro-scope-example" onclick="usarExemplo('Mostre a composição de ICMS e FECOP por decêndio em dezembro de 2025.')">Experimentar ICMS/FECOP <span aria-hidden="true">↗</span></button>
+                        </article>
+                    </div>
+                    <div class="faro-scope-footer">
+                        <strong>Você também pode:</strong> consultar a quantidade de documentos pagos, conversar sobre uma tabela já gerada e exportar o relatório em PDF.
+                    </div>
+                </div>
+            </details>
+            <p class="faro-scope-note">* Cobertura aproximada informada para esta versão. A disponibilidade efetiva depende do carregamento da base; o mês corrente pode estar incompleto. Consultas por município, contribuinte ou previsão futura não fazem parte deste escopo.</p>
+        </section>
 
         <div class="examples">
             <div class="muted">Experimente consultas com a LLM:</div>
@@ -100,17 +165,11 @@
                     <button id="chooseChat" type="button" class="action-choice" aria-pressed="false"
                         aria-controls="chatSection" onclick="escolherAcao('chat')">Conversar com estes dados</button>
                     <button id="chooseNew" type="button" class="action-choice" aria-pressed="false"
-                        aria-controls="newAnalysisPanel" onclick="escolherAcao('new')">Nova análise</button>
+                        onclick="iniciarNovaAnalise()">Nova análise</button>
                     <button id="downloadPdf" type="button" class="download-report"
                         onclick="baixarRelatorioPdf()">Baixar relatório em PDF</button>
                 </div>
                 <div id="pdfStatus" class="action-status" role="status" aria-live="polite"></div>
-                <div id="newAnalysisPanel" class="new-analysis-panel" hidden>
-                    <label for="newAnalysisQuestion" class="label">Nova pergunta</label>
-                    <p class="muted">Inicia uma nova consulta, sem reutilizar os filtros ou o contexto da conversa anterior.</p>
-                    <textarea id="newAnalysisQuestion" rows="3" placeholder="Ex.: compare a arrecadação por segmento em abril e maio de 2026"></textarea>
-                    <button id="newAnalysisSend" type="button" onclick="enviarNovaAnalise()">Gerar nova análise</button>
-                </div>
             </section>
 
             <!-- Informações técnicas são opcionais: os resultados ficam em primeiro plano. -->
@@ -164,6 +223,6 @@
         </div>
     </div>
 
-    <script src="/static/js/playground.js?v=5" defer></script>
+    <script src="/static/js/playground.js?v=6" defer></script>
 </body>
 </html>

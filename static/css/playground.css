@@ -326,3 +326,39 @@ body {
     .action-buttons button { width: 100%; }
     .download-report { margin-left: 0 !important; }
 }
+
+/* Guia de capacidades: sem dependências externas e sem tocar no relatório. */
+.faro-scope { margin: 24px 0 18px; border: 1px solid #cfe3d6; border-radius: 14px; overflow: hidden; background: linear-gradient(112deg, #f2faf5 0%, #fff 68%); }
+.faro-scope-heading { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 22px 24px 13px; }
+.faro-scope-kicker { color: #28724d; font-size: 11px; font-weight: 800; letter-spacing: .12em; margin-bottom: 8px; }
+.faro-scope h2 { font-size: clamp(18px, 2vw, 23px); color: #153d2b; margin: 0 0 7px; }
+.faro-scope-heading p { font-size: 14px; line-height: 1.55; color: #51625a; margin: 0; max-width: 720px; }
+.faro-scope-period { display: flex; align-items: center; gap: 11px; background: #fff; border: 1px solid #dceae0; border-radius: 12px; padding: 12px 15px; flex-shrink: 0; }
+.faro-scope-period-icon { background: #e3f3e8; color: #1a7147; border-radius: 9px; font-size: 22px; width: 38px; height: 38px; display: grid; place-items: center; }
+.faro-scope-period strong, .faro-scope-period span:last-child { display: block; }
+.faro-scope-period strong { font-size: 14px; color: #1d4330; }
+.faro-scope-period div span { color: #6a7970; font-size: 12px; margin-top: 3px; }
+.faro-scope-tags { display: flex; flex-wrap: wrap; gap: 7px; padding: 0 24px 17px; }
+.faro-scope-tags span { font-size: 12px; color: #286043; background: #e8f4eb; border-radius: 99px; padding: 6px 10px; }
+.faro-scope-details { margin: 0 16px; background: #fff; border: 1px solid #dce8df; border-radius: 10px; overflow: hidden; }
+.faro-scope-details summary { list-style: none; display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 12px 16px; font-size: 13px; font-weight: 700; color: #174e32; }
+.faro-scope-details summary::-webkit-details-marker { display:none; }
+.faro-scope-details summary:hover { background: #f8fcf9; }
+.faro-scope-details summary:focus-visible { outline: 3px solid #87bf9e; outline-offset: -3px; }
+.faro-scope-plus { display: inline-grid; place-items: center; width: 24px; height: 24px; background: #e5f4e9; border-radius: 7px; font-size: 20px; }
+.faro-scope-plus::before { content: '+'; }
+.faro-scope-details[open] .faro-scope-plus::before { content: '−'; }
+.faro-scope-body { border-top: 1px solid #e6ede8; padding: 16px; }
+.faro-scope-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.faro-scope-card { padding: 17px; border: 1px solid #e2e9e4; border-radius: 11px; background: #fff; display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
+.faro-scope-number { color: #347d56; font-size: 10px; font-weight: 800; letter-spacing: .09em; }
+.faro-scope-card h3 { font-size: 15px; line-height: 1.35; color: #1d3226; margin: 9px 0 7px; }
+.faro-scope-card p { color: #5d6b61; font-size: 13px; line-height: 1.5; margin: 0 0 15px; }
+button.faro-scope-example { background: transparent; color: #16633e; border: 0; padding: 6px 0; margin: auto 0 0; font-size: 12px; font-weight: 700; text-align: left; }
+button.faro-scope-example:hover { background: transparent; color: #0b3e23; text-decoration: underline; }
+button.faro-scope-example:focus-visible { outline: 2px solid #2b8e5e; outline-offset: 4px; }
+.faro-scope-footer { margin-top: 14px; padding: 12px 14px; background: #f5f9f6; border-radius: 8px; color: #53675a; font-size: 12px; line-height: 1.55; }
+.faro-scope-footer strong { color: #235238; }
+.faro-scope-note { padding: 0 24px; margin: 12px 0 16px; font-size: 11px; line-height: 1.5; color: #748078; }
+@media (max-width: 1000px) { .faro-scope-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 650px) { .faro-scope-heading { flex-direction: column; align-items: stretch; padding: 17px 16px 12px; } .faro-scope-period { align-self: flex-start; } .faro-scope-tags { padding: 0 16px 15px; } .faro-scope-details { margin: 0 10px; } .faro-scope-grid { grid-template-columns: 1fr; } .faro-scope-body { padding: 10px; } .faro-scope-note { padding: 0 16px; } }

@@ -1,5 +1,8 @@
 function usarExemplo(texto) {
-            document.getElementById("questionInput").value = texto;
+            const campo = document.getElementById("questionInput");
+            campo.value = texto;
+            campo.focus({preventScroll: true});
+            campo.scrollIntoView({behavior: "smooth", block: "center"});
         }
 
         function mostrarErro(msg) {
@@ -188,7 +191,7 @@ function usarExemplo(texto) {
 
         let conversaAtual = null;
         let historicoChat = [];
-        let modoInteracao = null; // null | chat | new; escolha explícita do usuário
+        let modoInteracao = null; // null | chat; nova análise retorna à tela inicial
         let sessaoId = (typeof crypto !== "undefined" && crypto.randomUUID)
             ? crypto.randomUUID() : null;
         let ultimaInteracaoId = null;
@@ -274,31 +277,39 @@ function usarExemplo(texto) {
             const podeInteragir = Boolean(conversaAtual);
             document.getElementById("actionPanel").hidden = !podeInteragir;
             const chatAberto = podeInteragir && modoInteracao === "chat";
-            const novaAberta = podeInteragir && modoInteracao === "new";
             document.getElementById("chatSection").hidden = !chatAberto;
-            document.getElementById("newAnalysisPanel").hidden = !novaAberta;
             document.getElementById("chooseChat").setAttribute("aria-pressed", String(chatAberto));
-            document.getElementById("chooseNew").setAttribute("aria-pressed", String(novaAberta));
         }
 
         function escolherAcao(tipo) {
-            if (!conversaAtual || !["chat", "new"].includes(tipo)) return;
-            modoInteracao = modoInteracao === tipo ? null : tipo;
+            if (!conversaAtual || tipo !== "chat") return;
+            modoInteracao = modoInteracao === "chat" ? null : "chat";
             sincronizarAcoes();
             if (modoInteracao === "chat") document.getElementById("chatQuestion").focus();
-            if (modoInteracao === "new") document.getElementById("newAnalysisQuestion").focus();
         }
 
-        async function enviarNovaAnalise() {
-            const caixa = document.getElementById("newAnalysisQuestion");
-            const pergunta = caixa.value.trim();
-            if (!pergunta) {
-                caixa.focus();
-                document.getElementById("pdfStatus").textContent = "Digite a pergunta da nova análise.";
-                return;
-            }
-            document.getElementById("questionInput").value = pergunta;
-            await enviarPergunta(); // /ask: sem previous_spec, previous_data ou history
+        function iniciarNovaAnalise() {
+            // A nova análise reinicia a experiência visual e o contexto do relatório,
+            // mas preserva o ID da sessão para rastreabilidade das interações.
+            conversaAtual = null;
+            historicoChat = [];
+            modoInteracao = null;
+            ultimaInteracaoId = null;
+
+            document.getElementById("questionInput").value = "";
+            document.getElementById("chatQuestion").value = "";
+            document.getElementById("chatMessages").replaceChildren();
+            document.getElementById("initialFeedback").replaceChildren();
+            document.getElementById("pdfStatus").textContent = "";
+            document.getElementById("queryDetails").open = false;
+            document.getElementById("resultado").style.display = "none";
+            document.getElementById("faroWelcome").hidden = false;
+            document.getElementById("initialQueryPanel").hidden = false;
+            esconderErro();
+            esconderLoading();
+            sincronizarAcoes();
+            window.scrollTo({ top: 0, behavior: "smooth" });
+            document.getElementById("questionInput").focus({ preventScroll: true });
         }
 
         async function baixarRelatorioPdf() {
@@ -560,7 +571,6 @@ function usarExemplo(texto) {
                 conversaAtual = data;
                 modoInteracao = null;
                 document.getElementById("initialQueryPanel").hidden = true;
-                document.getElementById("newAnalysisQuestion").value = "";
                 document.getElementById("pdfStatus").textContent = "";
                 document.getElementById("faroWelcome").hidden = true;
                 historicoChat = [];
