@@ -59,13 +59,6 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 | `faro_usage_dashboard.py` | Dados do painel administrativo |
 | `templates/`, `static/` | Interfaces web do Faro e do painel |
 
-## Configuração e testes
-
-`ANALYSIS_PLANNER_MODE` aceita `legacy` (padrão), `shadow` e `active`. O modo `active` habilita o planejador semântico para as continuações.
-
-```powershell
-python -m pytest -q tests
-```
 
 Os eventos de interação são gravados em `logs_interacoes/interacoes_YYYY-MM-DD.jsonl` e as sugestões em `logs_interacoes/sugestoes_YYYY-MM-DD.jsonl`. O diretório pode ser alterado por `INTERACTION_LOG_DIR`.
 
