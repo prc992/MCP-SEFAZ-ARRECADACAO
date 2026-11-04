@@ -43,8 +43,8 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 | Endereço | Finalidade |
 |---|---|
-| [`/faro`](http://127.0.0.1:8000/faro) | Interface de consultas (também disponível em `/playground`) |
-| [`/faro/admin`](http://127.0.0.1:8000/faro/admin) | Dashboard de uso e sugestões |
+| [`/faro`] | Interface de consultas (também disponível em `/playground`) |
+| [`/faro/admin`] | Dashboard de uso e sugestões |
 
 ## Estrutura principal
 
