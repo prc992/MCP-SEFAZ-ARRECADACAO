@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Faro | Agente de Dados da SEFAZ</title>
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-    <link rel="stylesheet" href="/static/css/playground.css?v=6" />
+    <link rel="stylesheet" href="/static/css/playground.css?v=7" />
 </head>
 <body>
     <div class="container">
@@ -139,7 +139,16 @@
 
         </section>
 
-        <div id="loading">Gerando resposta...</div>
+        <!-- Indicador global: mantém o processamento perceptível inclusive em consultas demoradas. -->
+        <div id="loadingOverlay" class="loading-overlay" hidden role="status"
+             aria-live="polite" aria-atomic="true" aria-label="Faro processando solicitação">
+            <div class="loading-card">
+                <div class="loading-spinner" aria-hidden="true"></div>
+                <div id="loadingTitle" class="loading-title">Faro está analisando sua pergunta…</div>
+                <p id="loadingSubtitle" class="loading-subtitle">Consultando os dados e preparando a resposta.</p>
+                <p class="loading-hint">Esta operação pode levar alguns instantes. Não é necessário enviar novamente.</p>
+            </div>
+        </div>
 
         <div id="errorBox"></div>
 
@@ -223,6 +232,6 @@
         </div>
     </div>
 
-    <script src="/static/js/playground.js?v=6" defer></script>
+    <script src="/static/js/playground.js?v=7" defer></script>
 </body>
 </html>

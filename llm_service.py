@@ -7,6 +7,7 @@ import httpx
 from dotenv import load_dotenv
 from schemas import QuerySpec
 from catalog_service import listar_segmentos, listar_subgrupos_receita
+from observability import medir
 from business_metadata import BUSINESS_METADATA
 
 load_dotenv()
@@ -225,8 +226,9 @@ def interpretar_pergunta_llm(question: str) -> QuerySpec:
         raise RuntimeError("OPENAI_API_KEY não configurada no ambiente")
 
     # Catálogos reais restringem as opções de filtros conhecidas pela LLM.
-    segmentos = listar_segmentos()
-    subgrupos = listar_subgrupos_receita()
+    with medir("redshift_catalogs"):
+        segmentos = listar_segmentos()
+        subgrupos = listar_subgrupos_receita()
     contexto = (
         f"{BUSINESS_METADATA}\n\n"
         f"DATA ATUAL: {date.today().isoformat()}\n\n"
@@ -238,15 +240,16 @@ def interpretar_pergunta_llm(question: str) -> QuerySpec:
         "Somente aplique um filtro quando solicitado "
         "pela pergunta e sustentado pelo catálogo."
     )
-    resposta = _client().responses.parse(
-        model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
-        input=[
-            {"role": "system", "content": SYSTEM_PROMPT + "\n" + contexto},
-            {"role": "user", "content": question},
-        ],
-        text_format=QuerySpec,
-        store=False,
-    )
+    with medir("llm_parse", details={"model": os.getenv("OPENAI_MODEL", "gpt-4.1-mini")}):
+        resposta = _client().responses.parse(
+            model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+            input=[
+                {"role": "system", "content": SYSTEM_PROMPT + "\n" + contexto},
+                {"role": "user", "content": question},
+            ],
+            text_format=QuerySpec,
+            store=False,
+        )
 
     if resposta.output_parsed is None:
         raise ValueError("LLM não retornou um QuerySpec válido")

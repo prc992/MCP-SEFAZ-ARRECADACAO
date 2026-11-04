@@ -1,14 +1,14 @@
-.venv/
-__pycache__/
+# Credenciais e ambiente
 .env
-# Auditoria local de interações - nunca versionar os JSONL
-logs_interacoes/
+.env.*
+.venv/
 
-# Logs e relatórios de observabilidade
+# Logs e resultados de testes
 logs_interacoes/
 relatorio_logs/
 *.jsonl
 
-# Configurações e segredos
-.env
-.env.*
+# Arquivos temporários
+__pycache__/
+*.pyc
+.pytest_cache/

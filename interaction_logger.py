@@ -201,6 +201,9 @@ def registrar_etapa(*, session_id: str, interaction_id: str, stage: str,
     """
     permitidos = {'llm_parse', 'availability', 'redshift_query', 'chart_render',
                   'analysis_planner', 'analysis_validator', 'analysis_engine',
+                  'request_parse', 'redshift_connect', 'redshift_fetch', 'redshift_catalogs',
+                  'query_engine', 'chat_routing', 'llm_chat', 'planner_llm',
+                  'planner_mode', 'planner_outcome', 'planner_verdict',
                   'response_format', 'pdf_export', 'other'}
     if stage not in permitidos:
         raise ValueError('Etapa desconhecida')
@@ -213,7 +216,7 @@ def registrar_etapa(*, session_id: str, interaction_id: str, stage: str,
     # Informações seguras: pequenos contadores/flags, nunca SQL ou prompt.
     if isinstance(details, dict):
         whitelisted = {'row_count', 'cache_hit', 'retry_count', 'token_input',
-                       'token_output', 'model', 'planner_decision'}
+                       'token_output', 'model', 'planner_decision', 'operation', 'reason_code'}
         registro['details'] = {k: (_texto_seguro(v, 100) if isinstance(v, str) else v)
                                for k, v in details.items() if k in whitelisted
                                and isinstance(v, (str, int, bool, float))}

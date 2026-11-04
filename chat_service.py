@@ -19,6 +19,7 @@ from analysis.engine import (AnalysisEngine, _dec, metricas_disponiveis as _metr
 from domains.sefaz.catalog import SEFAZ_CATALOG
 from analysis.formatter import _br, _rotulo, format_analysis_result
 from analysis.planner import AnalysisPlanner, PlanningOutcome
+from observability import medir, evento
 
 # Uvicorn já configura esse logger para exibir INFO no console da aplicação.
 # Sem isso, logs INFO de shadow podem desaparecer com o root logger em WARNING.
@@ -170,7 +171,8 @@ def _responder_deterministico(req):
         period_1_label=spec.period_1_label, period_2_label=spec.period_2_label,
         others_named="outros" in _norm(req.question),
     )
-    resultado = AnalysisEngine(catalog=SEFAZ_CATALOG).execute(contexto, req.previous_data)
+    with medir("analysis_engine"):
+        resultado = AnalysisEngine(catalog=SEFAZ_CATALOG).execute(contexto, req.previous_data)
     return format_analysis_result(resultado, catalog=SEFAZ_CATALOG)
 
 
@@ -240,7 +242,8 @@ def _answer_semantic(req: ChatRequest, outcome: PlanningOutcome) -> str:
         contexto.metric = _selecionar_metrica(req, disponiveis)
     if contexto.metric is not None and contexto.metric not in disponiveis:
         return "O indicador solicitado não está disponível nos dados exibidos. Solicite uma nova consulta."
-    result = AnalysisEngine(catalog=SEFAZ_CATALOG).execute(contexto, req.previous_data)
+    with medir("analysis_engine"):
+        result = AnalysisEngine(catalog=SEFAZ_CATALOG).execute(contexto, req.previous_data)
     return format_analysis_result(result, catalog=SEFAZ_CATALOG)
 
 
@@ -253,7 +256,8 @@ def _planner_mode():
 
 
 def _plan_semantic(req: ChatRequest) -> PlanningOutcome:
-    return AnalysisPlanner(client_factory=_client, catalog=SEFAZ_CATALOG).plan(req)
+    with medir("analysis_planner"):
+        return AnalysisPlanner(client_factory=_client, catalog=SEFAZ_CATALOG).plan(req)
 
 
 def _shadow_compare(req: ChatRequest, outcome: PlanningOutcome) -> None:
@@ -300,15 +304,16 @@ def _decidir_com_llm(req: ChatRequest, *, require_query: bool = False,
                           "NÃO calcule valores, percentuais, rankings ou comparações "
                           "numéricas sobre os dados da tabela. Diante de necessidade de "
                           "cálculo, não produza números; solicite esclarecimento.")
-    resposta = _client().responses.parse(
-        model=os.getenv('OPENAI_MODEL', 'gpt-4.1-mini'),
-        input=[
-            {'role': 'system', 'content': system_prompt},
-            {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False, default=str)},
-        ],
-        text_format=ChatDecision,
-        store=False,
-    )
+    with medir("llm_chat", details={"model": os.getenv("OPENAI_MODEL", "gpt-4.1-mini")}):
+        resposta = _client().responses.parse(
+            model=os.getenv('OPENAI_MODEL', 'gpt-4.1-mini'),
+            input=[
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False, default=str)},
+            ],
+            text_format=ChatDecision,
+            store=False,
+        )
     decisao = resposta.output_parsed
     if decisao is None:
         raise ValueError('LLM não retornou decisão de continuação válida.')
@@ -348,6 +353,7 @@ def _decidir_com_llm(req: ChatRequest, *, require_query: bool = False,
 
 def decidir_continuacao(req: ChatRequest) -> ChatDecision:
     modo = _planner_mode()
+    evento("planner_mode", details={"planner_decision": modo})
     if modo == "legacy":
         return _decidir_legado(req)
 
@@ -364,6 +370,7 @@ def decidir_continuacao(req: ChatRequest) -> ChatDecision:
             "Não foi possível validar a interpretação desta pergunta. "
             "Tente reformulá-la ou solicite uma nova consulta."), origin="deterministic")
 
+    evento("planner_outcome", details={"planner_decision": outcome.action, "operation": outcome.spec.operation if outcome.spec else None, "reason_code": outcome.reason})
     logger.info("analysis_planner_decision mode=%s action=%s operation=%s reason=%s",
                 modo, outcome.action, outcome.spec.operation if outcome.spec else None, outcome.reason)
 

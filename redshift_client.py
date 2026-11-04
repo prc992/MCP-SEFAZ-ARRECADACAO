@@ -1,6 +1,7 @@
 import os
 import redshift_connector
 from dotenv import load_dotenv
+from observability import medir
 
 load_dotenv()
 
@@ -23,14 +24,17 @@ def get_connection():
 
 
 def executar_sql(sql: str):
-    conn = get_connection()
+    with medir("redshift_connect"):
+        conn = get_connection()
 
     try:
         cursor = conn.cursor()
-        cursor.execute(sql)
+        with medir("redshift_query"):
+            cursor.execute(sql)
 
         columns = [desc[0] for desc in cursor.description]
-        rows = cursor.fetchall()
+        with medir("redshift_fetch"):
+            rows = cursor.fetchall()
 
         resultado = []
 

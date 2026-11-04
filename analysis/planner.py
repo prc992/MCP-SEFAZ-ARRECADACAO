@@ -16,6 +16,7 @@ from .engine import metricas_disponiveis
 from .domain import DomainCatalog, resolve_catalog
 from .schemas import AnalysisOperation, AnalysisSpec
 from .validator import AnalysisPlanValidator
+from observability import medir, evento
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -190,15 +191,16 @@ class AnalysisPlanner:
                     "não confunda nome da DIMENSÃO com uma categoria individual, "
                     "e não use query se os dados atuais já respondem. "
                     "Motivo da rejeição: " + feedback) if attempt == 2 else ""
-                response = self._client_factory().responses.parse(
-                    model=os.getenv("ANALYSIS_PLANNER_MODEL", os.getenv("OPENAI_MODEL", "gpt-4.1-mini")),
-                    input=[
-                        {"role": "system", "content": PLANNER_PROMPT + "\n" + self.catalog.planner_context() + retry_rules},
-                        {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)},
-                    ],
-                    text_format=AnalysisIntent,
-                    store=False,
-                )
+                with medir("planner_llm", details={"retry_count": attempt - 1, "model": os.getenv("ANALYSIS_PLANNER_MODEL", os.getenv("OPENAI_MODEL", "gpt-4.1-mini"))}):
+                    response = self._client_factory().responses.parse(
+                        model=os.getenv("ANALYSIS_PLANNER_MODEL", os.getenv("OPENAI_MODEL", "gpt-4.1-mini")),
+                        input=[
+                            {"role": "system", "content": PLANNER_PROMPT + "\n" + self.catalog.planner_context() + retry_rules},
+                            {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)},
+                        ],
+                        text_format=AnalysisIntent,
+                        store=False,
+                    )
                 intent = response.output_parsed
             except ValidationError as exc:
                 logger.warning("analysis_planner_schema_invalid attempt=%s details=%s",
@@ -207,13 +209,16 @@ class AnalysisPlanner:
                 continue
             if not isinstance(intent, AnalysisIntent):
                 return PlanningOutcome(action="invalid", reason="missing_structured_intent")
-            verdict = self._validator.validate(req, intent, available, categories, retry=(attempt == 2))
+            with medir("analysis_validator", details={"retry_count": attempt - 1}):
+                verdict = self._validator.validate(req, intent, available, categories, retry=(attempt == 2))
+            evento("planner_verdict", details={"planner_decision": verdict.action, "retry_count": attempt - 1, "reason_code": verdict.reason})
             if verdict.action == "retry":
                 feedback = verdict.reason or "ambiguous_scope"
                 logger.info("analysis_planner_revalidation attempt=%s reason=%s", attempt, feedback)
                 continue
             if verdict.action == "clarify":
-                recovered = self._validator.recover_unambiguous(req, available, categories)
+                with medir("analysis_validator"):
+                    recovered = self._validator.recover_unambiguous(req, available, categories)
                 if recovered is not None and recovered.action == "analyze":
                     logger.info("analysis_plan_safe_recovery original_reason=%s operation=%s",
                                 verdict.reason, recovered.spec.operation)
@@ -223,7 +228,8 @@ class AnalysisPlanner:
             if verdict.action == "analyze":
                 return PlanningOutcome(action="analyze", spec=verdict.spec)
             return PlanningOutcome(action=verdict.action)
-        recovered = self._validator.recover_unambiguous(req, available, categories)
+        with medir("analysis_validator"):
+            recovered = self._validator.recover_unambiguous(req, available, categories)
         if recovered is not None and recovered.action == "analyze":
             logger.info("analysis_plan_safe_recovery original_reason=schema_validation_failed operation=%s",
                         recovered.spec.operation)

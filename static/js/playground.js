@@ -17,12 +17,33 @@ function usarExemplo(texto) {
             errorBox.textContent = "";
         }
 
-        function mostrarLoading() {
-            document.getElementById("loading").style.display = "block";
+        // Controla todas as ações enquanto uma consulta está em processamento.
+        // Não altera o estado anterior dos botões ao terminar a operação.
+        let requisicaoEmAndamento = false;
+        let estadoBotoesLoading = [];
+        let overflowAnterior = "";
+
+        function mostrarLoading(titulo = "Faro está analisando sua pergunta…",
+                               subtitulo = "Consultando os dados e preparando a resposta.") {
+            if (requisicaoEmAndamento) return false;
+            requisicaoEmAndamento = true;
+            document.getElementById("loadingTitle").textContent = titulo;
+            document.getElementById("loadingSubtitle").textContent = subtitulo;
+            estadoBotoesLoading = Array.from(document.querySelectorAll("button"), botao =>
+                ({botao, disabled: botao.disabled}));
+            estadoBotoesLoading.forEach(({botao}) => { botao.disabled = true; });
+            overflowAnterior = document.body.style.overflow;
+            document.body.style.overflow = "hidden";
+            document.getElementById("loadingOverlay").hidden = false;
+            return true;
         }
 
         function esconderLoading() {
-            document.getElementById("loading").style.display = "none";
+            document.getElementById("loadingOverlay").hidden = true;
+            document.body.style.overflow = overflowAnterior;
+            estadoBotoesLoading.forEach(({botao, disabled}) => { botao.disabled = disabled; });
+            estadoBotoesLoading = [];
+            requisicaoEmAndamento = false;
         }
 
         const rotulosTabela = {
@@ -289,6 +310,7 @@ function usarExemplo(texto) {
         }
 
         function iniciarNovaAnalise() {
+            if (requisicaoEmAndamento) return;
             // A nova análise reinicia a experiência visual e o contexto do relatório,
             // mas preserva o ID da sessão para rastreabilidade das interações.
             conversaAtual = null;
@@ -313,6 +335,7 @@ function usarExemplo(texto) {
         }
 
         async function baixarRelatorioPdf() {
+            if (requisicaoEmAndamento) return;
             const status = document.getElementById("pdfStatus");
             const botao = document.getElementById("downloadPdf");
             if (!conversaAtual) {
@@ -446,6 +469,7 @@ function usarExemplo(texto) {
         }
 
         async function enviarContinuacao() {
+            if (requisicaoEmAndamento) return;
             const caixa = document.getElementById("chatQuestion");
             const pergunta = caixa.value.trim();
             if (!pergunta || !conversaAtual) return;
@@ -454,7 +478,9 @@ function usarExemplo(texto) {
             const botao = document.getElementById("chatSend");
             botao.disabled = true;
             document.getElementById("downloadPdf").disabled = true;
-            botao.textContent = "Analisando...";
+            botao.textContent = "Faro está analisando...";
+            mostrarLoading("Faro está analisando sua continuação…",
+                "Verificando o contexto da conversa e preparando a resposta.");
             try {
                 const resposta = await fetch("/chat", {
                     method:"POST", headers:{"Content-Type":"application/json",
@@ -493,6 +519,7 @@ function usarExemplo(texto) {
             } catch (erro) {
                 adicionarMensagem("Erro ao continuar: " + erro.message, "chat-error");
             } finally {
+                esconderLoading();
                 botao.disabled = false;
                 document.getElementById("downloadPdf").disabled = false;
                 botao.textContent = "Enviar";
@@ -500,6 +527,7 @@ function usarExemplo(texto) {
         }
 
         async function enviarPergunta() {
+            if (requisicaoEmAndamento) return;
             const question = document.getElementById("questionInput").value.trim();
 
             if (!question) {
@@ -513,7 +541,8 @@ function usarExemplo(texto) {
             document.getElementById("chatSection").hidden = true;
             ultimaInteracaoId = null;
             document.getElementById("initialFeedback").replaceChildren();
-            mostrarLoading();
+            mostrarLoading("Faro está analisando sua pergunta…",
+                "Consultando os dados e preparando tabela e gráficos.");
             document.getElementById("resultado").style.display = "none";
             document.getElementById("queryDetails").open = false;
             document.getElementById("tablePeriod").textContent = "";
