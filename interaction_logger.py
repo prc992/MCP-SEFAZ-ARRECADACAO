@@ -272,3 +272,17 @@ def registrar_evento_ui(*, session_id: str, action: str,
                  'interaction_id': validar_id(interaction_id), 'ui_action': action})
     except Exception:
         _LOG.exception('Falha ao registrar ação de UI')
+
+
+def registrar_visita(*, pagina: str, client_ip: str | None = None) -> None:
+    """Registra abertura da página sem IP bruto, usuário/agente ou conteúdo sensível.
+
+    Uma visita é um carregamento de página, não um usuário único.
+    """
+    if pagina not in ("faro", "playground"):
+        raise ValueError("Página inválida")
+    try:
+        _append({"event_type": "page_view", "page": pagina,
+                 **_identidade_cliente(client_ip)})
+    except Exception:
+        _LOG.exception("Falha ao registrar visita")

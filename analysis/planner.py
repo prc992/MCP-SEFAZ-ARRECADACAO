@@ -72,6 +72,14 @@ Para query/defer, operation=null, metric=null, category=null,
 category_source='none'.
 
 Operações válidas:
+- maior_queda_consecutiva / maior_alta_consecutiva: maior queda/alta ABSOLUTA
+  entre observações mensais ou diárias consecutivas já exibidas.
+- maior_queda_percentual_consecutiva / maior_alta_percentual_consecutiva:
+  maior redução/aumento PERCENTUAL entre observações adjacentes.
+- variacao_entre_periodos: comparação direta de dois meses/dias CONSECUTIVOS da série.
+- variacao_consecutiva: variações mês a mês ou dia a dia, na série disponível.
+  Jamais use crescimento_max/min (que compara categorias em DOIS períodos) como
+  sinônimo de variação consecutiva numa série temporal.
 - maximo/minimo: extremo de um período; em comparações, maior/menor período de
   UMA categoria específica, não um ranking entre categorias.
 - amplitude: distância entre maior e menor em dados de período único.
@@ -180,6 +188,14 @@ class AnalysisPlanner:
             "dados_vazios": not bool(valid_rows),
             "ultima_troca": _safe_last_turn(req.history),
         }
+        # Operações temporais inequívocas são roteadas deterministicamente;
+        # economiza chamadas à LLM e evita falsas ambiguidades de escopo.
+        with medir("analysis_validator"):
+            consecutive = self._validator.classify_consecutive(req, available, categories)
+        if consecutive is not None and consecutive.action == "analyze":
+            evento("planner_verdict", details={"planner_decision": "analyze", "operation": consecutive.spec.operation,
+                                              "reason_code": "consecutive_series_recognized"})
+            return PlanningOutcome(action="analyze", spec=consecutive.spec)
         # Toda saída válida é avaliada no validador. Fazemos no máximo UMA
         # reclassificação para problemas de esquema OU plano suspeito, nunca
         # repassando cálculos para o segundo roteador conversacional.

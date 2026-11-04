@@ -21,6 +21,8 @@ class QuerySpec(BaseModel):
     analysis_type: Literal["aggregate", "compare_periods", "time_series"] = "aggregate"
     report_type: Literal["standard", "icms_fecop"] = "standard"
     months_back: int | None = None
+    # Modo de apresentação da série. A métrica continua sendo o valor absoluto.
+    series_mode: Literal["absolute", "percentage"] = "absolute"
 
     start_date: str | None = None
     end_date: str | None = None

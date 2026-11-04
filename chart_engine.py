@@ -79,33 +79,51 @@ def gerar_plotly_figure(dados: list[dict], spec: QuerySpec):
         return gerar_grafico_comparacao(dados, spec)
 
     x = [row[spec.group_by] for row in dados]
-    y = [row[spec.metric] for row in dados]
-    documentos = spec.metric == "qtd_documentos"
-    hover = [_valor_hover(v, documentos=documentos) for v in y]
+    percentual = spec.analysis_type == "time_series" and spec.series_mode == "percentage"
+    y = [row.get("variacao_percentual") for row in dados] if percentual else [row[spec.metric] for row in dados]
+    documentos = spec.metric == "qtd_documentos" and not percentual
+    if percentual:
+        def _hover_pct(row):
+            atual = _numero_br(row.get(spec.metric), inteiro=spec.metric == "qtd_documentos")
+            pct = row.get("variacao_percentual")
+            percentual_texto = (_numero_br(pct) + "%") if pct is not None else "indisponível"
+            unidade = "" if spec.metric == "qtd_documentos" else "R$ "
+            nome = "Documentos pagos" if spec.metric == "qtd_documentos" else "Arrecadação"
+            return f"Variação: {percentual_texto}<br>{nome}: {unidade}{atual}"
+        hover = [_hover_pct(row) for row in dados]
+    else:
+        hover = [_valor_hover(v, documentos=documentos) for v in y]
     tooltip = "%{x}<br>%{customdata}<extra></extra>"
+
+    def _rotulo_serie(v):
+        if percentual:
+            return f"{v:+.2f}%".replace(".", ",") if v is not None else ""
+        return _rotulo_resumido(v)
 
     if spec.chart_type == "bar":
         fig = go.Figure(data=[go.Bar(
-            x=x, y=y, text=[_rotulo_resumido(v) for v in y],
+            x=x, y=y, text=[_rotulo_serie(v) for v in y],
             textposition="outside", textfont=dict(size=11), cliponaxis=False,
             customdata=hover, hovertemplate=tooltip,
         )])
     else:
         fig = go.Figure(data=[go.Scatter(
             x=x, y=y, mode="lines+markers+text",
-            text=_valores_para_linha(y), textposition="top center",
+            text=([_rotulo_serie(v) for v in y] if percentual else _valores_para_linha(y)), textposition="top center",
             textfont=dict(size=10), cliponaxis=False,
             customdata=hover, hovertemplate=tooltip,
         )])
 
     fig.update_layout(
-        title=f"{spec.metric} por {spec.group_by}",
+        title=(f"Variação percentual mensal de {spec.metric}" if percentual else f"{spec.metric} por {spec.group_by}"),
         xaxis_title=spec.group_by,
-        yaxis_title=spec.metric,
+        yaxis_title="Variação mensal (%)" if percentual else spec.metric,
         separators=",."
     )
 
     _folga_escala(fig, y)
+    if percentual:
+        fig.update_yaxes(ticksuffix="%", zeroline=True, zerolinewidth=1)
 
     if spec.group_by == "decendio":
         fig.update_xaxes(

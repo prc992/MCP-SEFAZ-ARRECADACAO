@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Faro | Painel de uso</title>
+<style>
+:root{font-family:Inter,Arial,sans-serif;color:#193c2e;background:#f5f8f6;font-synthesis:none}
+*{box-sizing:border-box}body{margin:0}button{font:inherit;cursor:pointer}
+.layout{max-width:1420px;padding:32px 28px 65px;margin:auto}
+header{display:flex;gap:20px;justify-content:space-between;align-items:center;margin-bottom:26px;flex-wrap:wrap}
+.kicker{color:#347856;letter-spacing:.13em;font-size:11px;font-weight:800}.title{font-size:30px;letter-spacing:-.04em;margin:8px 0;color:#123b27}
+.subtitle{font-size:14px;color:#66776d;margin:0}.controls{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.select,.refresh{background:#fff;color:#215338;border:1px solid #d5e4d9;border-radius:10px;padding:11px 14px}
+.refresh{background:#175638;color:#fff;border-color:#175638}.refresh:hover{background:#0d4029}.updated{font-size:12px;color:#64756b}
+.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:18px}
+.metric,.panel{background:#fff;border:1px solid #e0e9e3;border-radius:15px;box-shadow:0 2px 8px #203a2b07}
+.metric{padding:22px}.metric small{display:block;color:#63766a;font-size:12px;margin-bottom:13px}.metric strong{display:block;font-size:30px;letter-spacing:-.035em;color:#163f2b}.metric .note{margin-top:7px;font-size:12px;color:#77867d}
+.grid{display:grid;grid-template-columns:1.5fr 1fr;gap:18px;margin-top:18px}.panel{padding:22px;min-width:0}.panel h2{font-size:17px;margin:0 0 6px;letter-spacing:-.02em}.panel .explain{font-size:12px;color:#718076;margin:0 0 20px;line-height:1.5}
+.chart{height:230px;display:flex;align-items:end;gap:4px;overflow:hidden;border-bottom:1px solid #edf1ee;padding:0 2px 6px}.bar-stack{display:flex;flex-direction:column;justify-content:flex-end;flex:1;min-width:3px;height:100%}.bar-questions{background:#288059;border-radius:3px 3px 0 0;min-height:0}.bar-errors{background:#e09b65;min-height:0}.axis{display:flex;justify-content:space-between;color:#8b9990;font-size:11px;padding-top:9px}.legend{margin-top:16px;color:#697a70;font-size:12px;display:flex;gap:17px}.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:5px;background:#288059}.dot.err{background:#e09b65}
+.list{display:flex;flex-direction:column;gap:13px}.list-row{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:14px;align-items:start}.list-title{font-size:13px;line-height:1.45;color:#304e3c;overflow-wrap:anywhere}.list-count{font-size:13px;font-weight:800;color:#1c5f40}.track{height:5px;background:#edf4ef;border-radius:6px;margin-top:7px;grid-column:1/-1;overflow:hidden}.fill{height:100%;background:#449a6c;border-radius:6px}
+.empty{color:#829188;font-size:14px;padding:18px 0}.warn{background:#fff7ec;border:1px solid #f4dcb7;padding:14px 17px;border-radius:11px;color:#806035;font-size:12px;line-height:1.6;margin-top:18px}.error{border:1px solid #f3c6c6;background:#fff3f3;color:#8a3030;padding:18px;border-radius:12px;margin-bottom:15px}
+.footer{margin-top:24px;color:#7a8b7e;font-size:12px;line-height:1.65}.split{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px}
+@media(max-width:1000px){.metrics{grid-template-columns:repeat(2,1fr)}.grid,.split{grid-template-columns:1fr}}@media(max-width:550px){.layout{padding:18px 14px 40px}.title{font-size:25px}.metrics{gap:9px}.metric{padding:16px}.metric strong{font-size:24px}.panel{padding:16px}}
+.suggestion-entry{padding:14px 0;border-bottom:1px solid #e5ede7;overflow-wrap:anywhere}
+.suggestion-entry:last-child{border-bottom:0}.suggestion-when{color:#657c6b;font-size:12px;margin-bottom:5px}
+.suggestion-message{font-size:14px;white-space:pre-wrap;color:#244734;margin:8px 0}
+.suggestion-context{white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace;font-size:12px;
+ background:#f3f7f4;padding:12px;overflow:auto;max-height:380px;border-radius:8px}
+.suggestion-entry summary{cursor:pointer;color:#175638;font-size:13px;font-weight:600}
+</style>
+</head>
+<body>
+<main class="layout">
+<header><div><div class="kicker">FARO · OBSERVABILIDADE</div><h1 class="title">Painel de uso</h1><p class="subtitle">Acompanhamento dos registros de interação, desempenho e qualidade</p></div>
+<div class="controls"><label for="days" class="updated">Período</label><select id="days" class="select"><option value="7">Últimos 7 dias</option><option value="30" selected>Últimos 30 dias</option><option value="90">Últimos 90 dias</option></select><button class="refresh" id="refresh">Atualizar</button></div></header>
+<div id="error" class="error" hidden></div>
+<section class="metrics" id="metrics" aria-label="Indicadores principais"></section>
+<div class="grid"><section class="panel"><h2>Movimento diário</h2><p class="explain">Perguntas registradas por dia, incluindo perguntas iniciais e continuações</p><div id="daily" class="chart" role="img" aria-label="Gráfico de perguntas e erros por dia"></div><div id="axis" class="axis"></div><div class="legend"><span><span class="dot"></span>Perguntas</span><span><span class="dot err"></span>Erros</span></div></section>
+<section class="panel"><h2>Perguntas mais frequentes</h2><p class="explain">Agrupadas por texto normalizado; números e datas não distinguem versões da pergunta</p><div id="questions" class="list"></div></section></div>
+<div class="split"><section class="panel"><h2>Tipos de análise</h2><p class="explain">Classificação disponível no logger, não uma avaliação da intenção correta</p><div id="categories" class="list"></div></section>
+<section class="panel"><h2>Feedback recebido</h2><p class="explain">Avaliações dos usuários, relacionadas a interações por identificador</p><div id="feedback" class="list"></div></section></div>
+<div class="split"><section class="panel"><h2>Erros por etapa</h2><p class="explain">Eventos instrumentados que registraram exceção; uma falha pode ser recuperada posteriormente</p><div id="stage-errors" class="list"></div></section>
+<section class="panel"><h2>Etapas de maior latência</h2><p class="explain">p95 de cada etapa, em ms, sem somar tempos de operações aninhadas</p><div id="stage-latency" class="list"></div></section></div>
+<div class="split"><section class="panel"><h2>Decisões do planejador</h2><p class="explain">Analyze, query, clarify, invalid e outras saídas registradas em modo semântico</p><div id="planner" class="list"></div></section>
+<section class="panel"><h2>Origem das respostas</h2><p class="explain">Respostas determinísticas, consultas e demais origens registradas</p><div id="origins" class="list"></div></section></div>
+<section class="panel" style="margin-top:18px" aria-label="Sugestões dos usuários">
+<h2>Sugestões dos usuários <span id="suggestion-count" class="updated"></span></h2>
+<p class="explain">Comentários vinculados à pergunta e ao histórico registrado. Abra o contexto para reproduzir; SQL literal e dados de arrecadação não são gravados.</p>
+<div id="suggestion-list"></div>
+</section>
+<div id="notice" class="warn" hidden></div>
+<div class="footer" id="footer">Atualização automática a cada 30 segundos. Dados extraídos dos arquivos JSONL locais, sem consultar o Redshift.</div>
+</main>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const number = n => n == null ? '—' : Number(n).toLocaleString('pt-BR');
+function elt(tag,cls,text){const x=document.createElement(tag);if(cls)x.className=cls;if(text!==undefined)x.textContent=String(text);return x}
+function metric(parent,title,value,note){let box=elt('div','metric');box.append(elt('small','',title),elt('strong','',value),elt('div','note',note));parent.append(box)}
+function listing(id,items,getName,getValue){const target=$(id);target.replaceChildren();if(!items.length){target.append(elt('p','empty','Sem registros no período.'));return}
+const max=Math.max(...items.map(getValue),1);for(const item of items){const row=elt('div','list-row');row.append(elt('div','list-title',getName(item)),elt('div','list-count',number(getValue(item))));const track=elt('div','track');const bar=elt('div','fill');bar.style.width=`${Math.max(1,100*getValue(item)/max)}%`;track.append(bar);row.append(track);target.append(row)}}
+function plotDaily(entries){let target=$('daily');target.replaceChildren();let maximum=Math.max(...entries.map(x=>x.perguntas),1);for(const item of entries){let col=elt('div','bar-stack');const volume=elt('div','bar-questions');volume.style.height=`${item.perguntas/maximum*100}%`;let errs=elt('div','bar-errors');errs.style.height=`${item.erros/maximum*100}%`;col.title=`${item.data}: ${item.perguntas} pergunta(s), ${item.erros} erro(s)`;col.append(volume);if(item.erros)col.append(errs);target.append(col)}const axis=$('axis');axis.replaceChildren();if(entries.length)axis.append(elt('span','',entries[0].data),elt('span','',entries[entries.length-1].data))}
+function render(x){const r=x.resumo,m=$('metrics');m.replaceChildren();metric(m,'Visitas ao link',number(r.visitas_pagina),'Aberturas de /faro e /playground');metric(m,'Perguntas realizadas',number(r.perguntas),'Consultas e continuações');metric(m,'Sessões distintas',number(r.sessoes),'Sessão não equivale a pessoa');metric(m,'Sessões recentes (15 min)',number(r.sessoes_recentes_15min),'Atividade recente por pergunta');metric(m,'Usuários pseudonimizados',number(r.identificadores_usuarios),r.identificadores_usuarios===null?'Configure HMAC no logger':'Somente interações identificadas');metric(m,'Taxa de erro técnico',r.taxa_erro_pct==null?'—':`${number(r.taxa_erro_pct)}%`,`${number(r.erros)} interações com erro`);metric(m,'Tempo mediano',r.tempo_mediano_s==null?'—':`${number(r.tempo_mediano_s)} s`,'Resposta total · p50');metric(m,'Latência p95',r.tempo_p95_s==null?'—':`${number(r.tempo_p95_s)} s`,'Resposta total · p95');metric(m,'Primeiras perguntas',number(r.consultas_iniciais),'Chamadas /ask');metric(m,'Continuações',number(r.continuacoes),'Chamadas /chat');
+plotDaily(x.diario);listing('questions',x.perguntas_frequentes,i=>i.pergunta_normalizada,i=>i.quantidade);listing('categories',x.categorias,i=>i.nome,i=>i.quantidade);
+listing('feedback',[{nome:'Útil',quantidade:r.feedback_positivo},{nome:'Não útil',quantidade:r.feedback_negativo}],i=>i.nome,i=>i.quantidade);
+listing('stage-errors',x.erros_por_etapa,i=>i.nome,i=>i.quantidade);listing('stage-latency',x.etapas_lentas,i=>`${i.etapa} · ${i.amostras} amostras`,i=>i.p95_ms);listing('planner',x.decisoes_planner,i=>i.nome,i=>i.quantidade);listing('origins',x.origens,i=>i.nome,i=>i.quantidade);
+$('notice').hidden=false;$('notice').textContent=x.qualidade.observacao_usuarios+' '+x.qualidade.observacao_status+' '+x.qualidade.observacao_tempo;
+$('footer').textContent=`Atualizado em ${new Date(x.periodo.atualizado_em).toLocaleString('pt-BR')}. ${number(x.qualidade.eventos_etapa)} eventos de etapa; ${number(x.qualidade.feedback_avaliado)} avaliações; ${number(x.qualidade.linhas_invalidas)} linhas inválidas. Atualização automática a cada 30 segundos. Sem consulta ao Redshift.`}
+function renderSuggestions(payload){
+ const lista=$('suggestion-list');lista.replaceChildren();
+ $('suggestion-count').textContent=`(${number(payload.total)} no período)`;
+ if(!payload.sugestoes.length){lista.append(elt('p','empty','Nenhuma sugestão no período.'));return;}
+ for(const sug of payload.sugestoes){
+   const item=elt('article','suggestion-entry');
+   item.append(elt('div','suggestion-when',new Date(sug.timestamp).toLocaleString('pt-BR')),
+               elt('div','suggestion-message',sug.suggestion_text));
+   const details=elt('details');const summary=elt('summary','','Ver contexto e histórico de reprodução');
+   const ctx=sug.contexto||{};
+   const steps=(ctx.historico||[]).map((step,i)=>({etapa:i+1,pergunta:step.question,
+     tipo:step.interaction_type,acao:step.action,status:step.status,
+     query_spec:step.query_spec,erro:step.error_type,
+     parent_interaction_id:step.parent_interaction_id,
+     interaction_id:step.interaction_id,sql_sha256:step.sql_sha256}));
+   const pre=elt('pre','suggestion-context',JSON.stringify({
+      suggestion_id:sug.suggestion_id,interaction_id:sug.interaction_id,
+      historico_incompleto:ctx.historico_incompleto,
+      etapas:steps,observacao:ctx.observacao
+   },null,2));
+   details.append(summary,pre);item.append(details);lista.append(item);
+ }
+}
+async function loadSuggestions(){
+ try { const res=await fetch(`/faro/admin/api/sugestoes?dias=${encodeURIComponent($('days').value)}`,{cache:'no-store'});
+       if(!res.ok)throw Error('HTTP '+res.status);renderSuggestions(await res.json());
+ }catch(e){$('suggestion-list').replaceChildren(elt('p','empty','Falha ao carregar sugestões: '+e.message));}
+}
+let loading=false;async function load(){if(loading)return;loading=true;$('refresh').disabled=true;try{let res=await fetch(`/faro/admin/api/uso?dias=${encodeURIComponent($('days').value)}`,{cache:'no-store'});if(!res.ok)throw Error('HTTP '+res.status);render(await res.json());await loadSuggestions();$('error').hidden=true}catch(e){$('error').textContent='Não foi possível carregar os registros: '+e.message;$('error').hidden=false}finally{loading=false;$('refresh').disabled=false}}
+$('days').addEventListener('change',load);$('refresh').addEventListener('click',load);window.setInterval(()=>{if(!document.hidden)load()},30000);load();
+</script>
+</body></html>

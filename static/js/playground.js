@@ -222,16 +222,18 @@ function usarExemplo(texto) {
             container.replaceChildren();
             if (!interactionId || !sessaoId) return;
             const texto = document.createElement("span");
-            texto.className = "feedback-note";
+            texto.className = "feedback-note feedback-sr-only";
+            texto.setAttribute("role", "status");
             texto.textContent = "Esta resposta foi útil?";
             container.appendChild(texto);
             const botoes = [];
-            for (const [voto, simbolo, rotulo] of [
-                ["positive", "👍", "Útil"], ["negative", "👎", "Não útil"]]) {
+            for (const [voto, rotulo, path] of [
+                ["positive", "Útil", '<path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H5a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 3a3.13 3.13 0 0 1 3 2.88Z"/>'],
+                ["negative", "Não útil", '<path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 21a3.13 3.13 0 0 1-3-2.88Z"/>']]) {
                 const botao = document.createElement("button");
                 botao.type = "button";
                 botao.className = "feedback-button";
-                botao.textContent = simbolo;
+                botao.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg><span>${rotulo}</span>`;
                 botao.title = rotulo;
                 botao.setAttribute("aria-label", rotulo);
                 botao.setAttribute("aria-pressed", votosLocais[interactionId] === voto ? "true" : "false");
@@ -260,6 +262,86 @@ function usarExemplo(texto) {
                 botoes.push(botao);
                 container.appendChild(botao);
             }
+            criarSugestao(interactionId, container);
+        }
+
+        // O formulário pertence à resposta indicada pelo interactionId (inicial ou follow-up).
+        function criarSugestao(interactionId, container) {
+            if (!interactionId || !sessaoId) return;
+            const bloco = document.createElement("div");
+            bloco.className = "suggestion-widget";
+            const abrir = document.createElement("button");
+            abrir.type = "button";
+            abrir.className = "suggestion-toggle";
+            abrir.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg><span>Enviar sugestão</span>';
+            abrir.setAttribute("aria-expanded", "false");
+            const formulario = document.createElement("form");
+            formulario.className = "suggestion-form";
+            formulario.hidden = true;
+            const label = document.createElement("label");
+            label.textContent = "O que o Faro pode melhorar nesta resposta?";
+            const campo = document.createElement("textarea");
+            campo.rows = 3;
+            campo.maxLength = 2000;
+            campo.minLength = 5;
+            campo.required = true;
+            campo.placeholder = "Descreva sua sugestão ou o comportamento que gostaria de corrigir...";
+            label.appendChild(campo);
+            const acoes = document.createElement("div");
+            acoes.className = "suggestion-actions";
+            const enviar = document.createElement("button");
+            enviar.type = "submit";
+            enviar.className = "suggestion-submit";
+            enviar.textContent = "Enviar";
+            const cancelar = document.createElement("button");
+            cancelar.type = "button";
+            cancelar.className = "suggestion-cancel";
+            cancelar.textContent = "Cancelar";
+            const status = document.createElement("span");
+            status.className = "suggestion-status";
+            status.setAttribute("role", "status");
+            acoes.append(enviar, cancelar);
+            formulario.append(label, acoes, status);
+            bloco.append(abrir, formulario);
+            container.appendChild(bloco);
+            function fechar() {
+                formulario.hidden = true;
+                abrir.setAttribute("aria-expanded", "false");
+            }
+            abrir.addEventListener("click", () => {
+                const mostrar = formulario.hidden;
+                formulario.hidden = !mostrar;
+                abrir.setAttribute("aria-expanded", String(mostrar));
+                if (mostrar) campo.focus();
+            });
+            cancelar.addEventListener("click", fechar);
+            formulario.addEventListener("submit", async event => {
+                event.preventDefault();
+                const mensagem = campo.value.trim();
+                if (mensagem.length < 5 || mensagem.length > 2000) {
+                    status.textContent = "Escreva entre 5 e 2000 caracteres.";
+                    return;
+                }
+                enviar.disabled = true;
+                status.textContent = "Registrando...";
+                try {
+                    const resposta = await fetch("/suggestions", {
+                        method: "POST",
+                        headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify({session_id: sessaoId,
+                            interaction_id: interactionId, text: mensagem})
+                    });
+                    if (!resposta.ok) throw new Error("HTTP " + resposta.status);
+                    status.textContent = "Sugestão registrada. Obrigado!";
+                    campo.disabled = true;
+                    cancelar.remove();
+                    abrir.querySelector("span").textContent = "Sugestão enviada";
+                    abrir.disabled = true;
+                } catch (erro) {
+                    status.textContent = "Não foi possível registrar a sugestão. Tente novamente.";
+                    enviar.disabled = false;
+                }
+            });
         }
 
         function adicionarMensagem(texto, classe, interactionId=null, rolar=true) {

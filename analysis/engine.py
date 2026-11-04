@@ -7,7 +7,8 @@ from decimal import Decimal
 
 from .schemas import AnalysisResult, AnalysisSpec
 from .domain import DomainCatalog, resolve_catalog
-from .operations import amplitude_values, extreme_period, period_changes, rank_values, sum_others
+from .operations import amplitude_values, extreme_period, period_changes, rank_values, sum_others, consecutive_changes, temporal_key
+from datetime import date
 
 
 
@@ -76,11 +77,11 @@ class AnalysisEngine:
         self.catalog = resolve_catalog(catalog)
 
     def execute(self, spec: AnalysisSpec, linhas: list[dict]) -> AnalysisResult:
-        def result(status, *, category=None, counterpart=None, selected_period=None, **values):
+        def result(status, *, category=None, counterpart=None, selected_period=None, series=None, **values):
             return AnalysisResult(
                 spec=spec, status=status, metric_name=spec.metric,
                 category=category, counterpart=counterpart,
-                selected_period=selected_period, values=values,
+                selected_period=selected_period, values=values, series=series or [],
             )
 
         # Protocolo atual: 101 ou mais linhas podem representar dados truncados.
@@ -99,6 +100,67 @@ class AnalysisEngine:
             return result("category_not_found")
         if spec.explicit_category is not None and spec.explicit_category not in matriz:
             return result("category_not_found")
+
+        consecutive_ops = {
+            "maior_queda_consecutiva", "maior_alta_consecutiva",
+            "maior_queda_percentual_consecutiva", "maior_alta_percentual_consecutiva",
+            "variacao_consecutiva", "variacao_entre_periodos",
+        }
+        if op in consecutive_ops:
+            if spec.group_by not in ("mes", "data_pagamento") or comparacao:
+                return result("series_required")
+            try:
+                pairs = consecutive_changes({c: row[0] for c, row in matriz.items()}, spec.group_by)
+            except ValueError as exc:
+                return result(str(exc) if str(exc) in ("insufficient_periods", "nonconsecutive_periods") else "invalid_data")
+            # Uma série cujo último mês é o mês corrente (ainda parcial) não deve
+            # produzir uma falsa queda. Não se infere fechamento por data carregada.
+            partial = (spec.group_by == "mes" and
+                       temporal_key(pairs[-1][1], "mes") == date.today().year * 12 + date.today().month - 1)
+            if partial:
+                pairs = pairs[:-1]
+                if not pairs:
+                    return result("incomplete_current_period")
+            if op == "variacao_entre_periodos":
+                if not spec.from_period or not spec.to_period:
+                    return result("periods_required")
+                matches = [r for r in pairs if r[0] == spec.from_period and r[1] == spec.to_period]
+                if matches:
+                    chosen = matches[0]
+                else:
+                    reverse = [r for r in pairs if r[1] == spec.from_period and r[0] == spec.to_period]
+                    if reverse:
+                        old, new, v1, v2, _, _ = reverse[0]
+                        delta = v1 - v2
+                        pct = delta * Decimal(100) / v2 if v2 != 0 else None
+                        chosen = (new, old, v2, v1, delta, pct)
+                    else:
+                        if partial and date.today().strftime("%Y-%m") in (spec.from_period, spec.to_period):
+                            return result("incomplete_current_period")
+                        return result("nonconsecutive_periods")
+            elif op == "variacao_consecutiva":
+                records = [{"from": a, "to": b, "first": v1, "second": v2,
+                            "difference": delta, "percent": pct}
+                           for a, b, v1, v2, delta, pct in pairs]
+                last = pairs[-1]
+                return result("ok", category=last[1], counterpart=last[0],
+                              series=records, partial_excluded=1 if partial else 0)
+            else:
+                is_fall = "queda" in op
+                percent = "percentual" in op
+                candidates = [r for r in pairs if (r[5] if percent else r[4]) is not None
+                              and ((r[4] < 0) if is_fall else (r[4] > 0))]
+                if not candidates:
+                    if percent and not any(r[5] is not None for r in pairs):
+                        return result("all_percent_references_zero")
+                    return result("no_matching_change")
+                # Empate resolve pelo primeiro período cronológico.
+                chosen = min(candidates, key=lambda r: r[5] if percent else r[4]) if is_fall else max(
+                    candidates, key=lambda r: r[5] if percent else r[4])
+            a, b, v1, v2, delta, pct = chosen
+            return result("ok", category=b, counterpart=a,
+                          first=v1, second=v2, difference=delta, percent=pct,
+                          partial_excluded=1 if partial else 0)
 
         # Conserva o disparador explícito da operação "outros" na etapa 1.
         if op == "outros" and spec.others_named:

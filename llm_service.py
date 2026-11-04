@@ -1,5 +1,7 @@
 """Interpretação alternativa de perguntas em QuerySpec usando uma LLM."""
 import os
+import re
+import unicodedata
 from datetime import date
 from functools import lru_cache
 import httpx
@@ -130,6 +132,11 @@ Regras de interpretação:
 - Não altere anos ou meses explicitamente informados.
 
 - time_series: use group_by=mes, chart_type=line, top_n=null e months_back=N.
+- Em uma série temporal solicitada expressamente em termos percentuais, com evolução percentual mês a mês, crescimento percentual mensal ou variação percentual mensal, use series_mode="percentage".
+- Em qualquer série temporal de valores absolutos, use series_mode="absolute".
+- Nunca transforme a métrica em percentual: metric continua valor_arrecadado ou qtd_documentos.
+- A variação percentual é calculada pelo backend sobre os totais mensais; não calcule na LLM.
+- Para comparações entre dois períodos, aggregate e ICMS/FECOP, mantenha series_mode="absolute".
 - Agrupamento por data_pagamento: chart_type=line, top_n=null. Demais: chart_type=bar,
   top_n=10, salvo pedido explícito do usuário.
 - order_desc=true, salvo pedido de menores valores ou ordem crescente.
@@ -255,6 +262,16 @@ def interpretar_pergunta_llm(question: str) -> QuerySpec:
         raise ValueError("LLM não retornou um QuerySpec válido")
 
     spec = resposta.output_parsed
+    # Proteção determinística contra uma classificação inconsistente: só altera
+    # a modalidade quando existe uma intenção percentual mensal explícita.
+    normalizada = "".join(c for c in unicodedata.normalize("NFD", question.lower())
+                          if unicodedata.category(c) != "Mn")
+    serie = spec.analysis_type == "time_series" and spec.group_by == "mes" and spec.report_type == "standard"
+    pedido_percentual = bool(re.search(r"\b(percentua(?:l|is)|porcentagem|em\s*%|em termos percentuais)\b", normalizada))
+    pedido_mensal = bool(re.search(r"\b(mes|meses|mensal|mensalmente|mes a mes)\b", normalizada))
+    modo_executavel = "percentage" if serie and pedido_percentual and pedido_mensal else "absolute"
+    if spec.series_mode != modo_executavel:
+        spec = spec.model_copy(update={"series_mode": modo_executavel})
 
     if (
         spec.analysis_type == "compare_periods"

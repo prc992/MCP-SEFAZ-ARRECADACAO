@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Faro | Agente de Dados da SEFAZ</title>
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-    <link rel="stylesheet" href="/static/css/playground.css?v=7" />
+    <link rel="stylesheet" href="/static/css/playground.css?v=10" />
 </head>
 <body>
     <div class="container">
@@ -21,7 +21,16 @@
         <section id="initialQueryPanel" aria-label="Consulta inicial">
         <textarea id="questionInput" placeholder="Ex.: compare ICMS e FECOP por decêndio entre setembro de 2025 e setembro de 2026"></textarea>
         <br />
-        <button onclick="enviarPergunta()">Gerar resposta</button>
+        <button onclick="enviarPergunta()">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18"
+                viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                aria-hidden="true">
+                <path d="M3 3v18h18"/>
+                <path d="m19 9-5 5-4-4-3 3"/>
+            </svg>
+            Gerar relatório
+        </button>
 
         <section class="faro-scope" aria-labelledby="scopeTitle">
             <div class="faro-scope-heading">
@@ -88,54 +97,60 @@
             <p class="faro-scope-note">* Cobertura aproximada informada para esta versão. A disponibilidade efetiva depende do carregamento da base; o mês corrente pode estar incompleto. Consultas por município, contribuinte ou previsão futura não fazem parte deste escopo.</p>
         </section>
 
-        <div class="examples">
-            <div class="muted">Experimente consultas com a LLM:</div>
-            <span class="example-chip" onclick="usarExemplo('Mostre a composição de ICMS e FECOP por decêndio em dezembro de 2025.')">ICMS/FECOP · dez/2025</span>
-            <span class="example-chip" onclick="usarExemplo('Compare a composição de ICMS e FECOP por decêndio entre setembro de 2025 e setembro de 2026.')">ICMS/FECOP · set/25 × set/26</span>
-            <span class="example-chip" onclick="usarExemplo('Quanto arrecadamos de FECOP no segundo decêndio de dezembro de 2025?')">FECOP · 2º decêndio</span>
+        <section class="examples faro-examples" aria-labelledby="examplesTitle">
+            <div class="faro-examples-heading">
+                <div class="faro-scope-kicker">PERGUNTAS PRONTAS</div>
+                <h2 id="examplesTitle">Experimente consultas com o Faro</h2>
+                <p>Escolha uma sugestão para preencher a pergunta acima. Você pode adaptar o texto antes de gerar a análise.</p>
+            </div>
+            <div class="faro-example-list" aria-label="Exemplos de perguntas">
+            <button type="button" class="example-chip" onclick="usarExemplo('Mostre a composição de ICMS e FECOP por decêndio em dezembro de 2025.')">ICMS/FECOP · dez/2025</button>
+            <button type="button" class="example-chip" onclick="usarExemplo('Compare a composição de ICMS e FECOP por decêndio entre setembro de 2025 e setembro de 2026.')">ICMS/FECOP · set/25 × set/26</button>
+            <button type="button" class="example-chip" onclick="usarExemplo('Quanto arrecadamos de FECOP no segundo decêndio de dezembro de 2025?')">FECOP · 2º decêndio</button>
 
 
-            <span class="example-chip" onclick="usarExemplo('Mostre a arrecadação de ICMS por decêndio em setembro de 2026.')">
+            <button type="button" class="example-chip" onclick="usarExemplo('Mostre a arrecadação de ICMS por decêndio em setembro de 2026.')">
                 Decêndios · ICMS set/2026
-            </span>
+            </button>
 
-            <span class="example-chip" onclick="usarExemplo('Quanto arrecadamos de ICMS no segundo decêndio de setembro de 2026?')">
+            <button type="button" class="example-chip" onclick="usarExemplo('Quanto arrecadamos de ICMS no segundo decêndio de setembro de 2026?')">
                 2º decêndio · ICMS
-            </span>
+            </button>
 
-            <span class="example-chip" onclick="usarExemplo('Compare a arrecadação de ICMS por decêndio entre agosto e setembro de 2026.')">
+            <button type="button" class="example-chip" onclick="usarExemplo('Compare a arrecadação de ICMS por decêndio entre agosto e setembro de 2026.')">
                 Decêndios · ago × set/2026
-            </span>
+            </button>
 
-            <span class="example-chip" onclick="usarExemplo('Compare o terceiro decêndio de agosto com o terceiro decêndio de setembro de 2026.')">
+            <button type="button" class="example-chip" onclick="usarExemplo('Compare o terceiro decêndio de agosto com o terceiro decêndio de setembro de 2026.')">
                 3º decêndio · ago × set
-            </span>
+            </button>
 
-            <span class="example-chip" onclick="usarExemplo('Qual foi o total arrecadado de ICMS em setembro de 2026?')">
+            <button type="button" class="example-chip" onclick="usarExemplo('Qual foi o total arrecadado de ICMS em setembro de 2026?')">
                 Total de ICMS · set/2026
-            </span>
+            </button>
 
-            <span class="example-chip" onclick="usarExemplo('Quanto arrecadamos em cada decêndio de setembro de 2026?')">
+            <button type="button" class="example-chip" onclick="usarExemplo('Quanto arrecadamos em cada decêndio de setembro de 2026?')">
                 Decêndios · todas as receitas
-            </span>
+            </button>
 
-            <span class="example-chip" onclick="usarExemplo('Quais segmentos arrecadaram mais com ICMS em abril de 2026?')">
+            <button type="button" class="example-chip" onclick="usarExemplo('Quais segmentos arrecadaram mais com ICMS em abril de 2026?')">
                 Segmentos · ICMS abr/2026
-            </span>
+            </button>
 
-            <span class="example-chip" onclick="usarExemplo('Quais receitas do subgrupo ICMS arrecadaram mais em maio de 2026?')">
+            <button type="button" class="example-chip" onclick="usarExemplo('Quais receitas do subgrupo ICMS arrecadaram mais em maio de 2026?')">
                 Receitas do ICMS · mai/2026
-            </span>
+            </button>
 
-            <span class="example-chip" onclick="usarExemplo('Quais subgrupos de receita tiveram maior arrecadação em junho de 2026?')">
+            <button type="button" class="example-chip" onclick="usarExemplo('Quais subgrupos de receita tiveram maior arrecadação em junho de 2026?')">
                 Subgrupos · jun/2026
-            </span>
+            </button>
 
-            <span class="example-chip" onclick="usarExemplo('Mostre como a arrecadação de ICMS evoluiu mês a mês nos últimos seis meses.')">
+            <button type="button" class="example-chip" onclick="usarExemplo('Mostre como a arrecadação de ICMS evoluiu mês a mês nos últimos seis meses.')">
                 Evolução mensal · ICMS
-            </span>
+            </button>
 
-        </div>
+            </div>
+        </section>
 
         </section>
 
@@ -232,6 +247,6 @@
         </div>
     </div>
 
-    <script src="/static/js/playground.js?v=7" defer></script>
+    <script src="/static/js/playground.js?v=9" defer></script>
 </body>
 </html>

@@ -29,6 +29,18 @@ def format_analysis_result(result: AnalysisResult, catalog: DomainCatalog | None
     spec = result.spec
     op = spec.operation
     nome = domain.label(spec.metric)
+    if status == "series_required":
+        return "Esta operação exige uma série por mês ou por dia, não uma comparação entre categorias."
+    if status == "insufficient_periods":
+        return "São necessárias pelo menos duas observações temporais para calcular a variação."
+    if status == "nonconsecutive_periods":
+        return "Os períodos solicitados não são consecutivos ou existem lacunas na série. Não tratei períodos ausentes como zero."
+    if status == "incomplete_current_period":
+        return "A série só permite comparar com o mês corrente ainda parcial. Solicite mais meses completos para uma comparação confiável."
+    if status == "no_matching_change":
+        return "Não foi encontrada variação na direção solicitada nos períodos consecutivos comparáveis."
+    if status == "periods_required":
+        return "Informe os dois meses ou dias consecutivos que deseja comparar."
     if status == "too_many_rows":
         return ("Há muitas linhas para um cálculo confiável no chat. "
                 "Peça um recorte ou agrupamento específico antes de calcular.")
@@ -67,6 +79,34 @@ def format_analysis_result(result: AnalysisResult, catalog: DomainCatalog | None
     p1 = spec.period_1_label or "período 1"
     p2 = spec.period_2_label or "período 2"
     cat = _rotulo(result.category, domain)
+
+    if op == "variacao_consecutiva" and result.series:
+        lines = [f"Variação consecutiva de {nome}:"]
+        for item in result.series:
+            lines.append(f"• {item['from']} → {item['to']}: "
+                         f"{fmt(item['first'])} → {fmt(item['second'])}; "
+                         f"diferença {fmt(item['difference'])}; "
+                         f"variação {_br(item['percent'], percentual=True)}.")
+        if val.get("partial_excluded"):
+            lines.append("O mês corrente, ainda parcial, foi excluído das comparações.")
+        return "\n".join(lines)
+
+    if op in ("maior_queda_consecutiva", "maior_alta_consecutiva",
+              "maior_queda_percentual_consecutiva", "maior_alta_percentual_consecutiva",
+              "variacao_consecutiva", "variacao_entre_periodos"):
+        anterior = _rotulo(result.counterpart, domain)
+        atual = _rotulo(result.category, domain)
+        if op.startswith("maior_queda"):
+            introducao = "A maior queda" + (" percentual" if "percentual" in op else " absoluta")
+        elif op.startswith("maior_alta"):
+            introducao = "A maior alta" + (" percentual" if "percentual" in op else " absoluta")
+        else:
+            introducao = "A variação"
+        aviso = (" O mês corrente, ainda parcial, foi excluído das comparações." if val.get("partial_excluded") else "")
+        return (f"{introducao} de {nome} ocorreu de {anterior} para {atual}: "
+                f"{fmt(val['first'])} → {fmt(val['second'])}; "
+                f"diferença {fmt(val['difference'])}; "
+                f"variação {_br(val['percent'], percentual=True)}.{aviso}")
 
     if op == "outros":
         return (f"{'Sim' if val['value'] > val['other_sum'] else 'Não'}. {cat}: {fmt(val['value'])}; "

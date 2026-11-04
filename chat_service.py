@@ -19,6 +19,7 @@ from analysis.engine import (AnalysisEngine, _dec, metricas_disponiveis as _metr
 from domains.sefaz.catalog import SEFAZ_CATALOG
 from analysis.formatter import _br, _rotulo, format_analysis_result
 from analysis.planner import AnalysisPlanner, PlanningOutcome
+from analysis.validator import AnalysisPlanValidator
 from observability import medir, evento
 
 # Uvicorn já configura esse logger para exibir INFO no console da aplicação.
@@ -132,6 +133,18 @@ def _op(req):
 
 
 def _responder_deterministico(req):
+    if req.previous_spec.group_by in ("mes", "data_pagamento") and req.previous_spec.analysis_type != "compare_periods":
+        dados_serie = SEFAZ_CATALOG.without_totals(req.previous_data)
+        available = _metricas_disponiveis(dados_serie, req.previous_spec, SEFAZ_CATALOG)
+        cats = [str(row[req.previous_spec.group_by]) for row in dados_serie
+                if row.get(req.previous_spec.group_by) is not None]
+        classified = AnalysisPlanValidator(catalog=SEFAZ_CATALOG).classify_consecutive(req, available, cats)
+        if classified is not None and classified.action == "analyze":
+            with medir("analysis_engine"):
+                result = AnalysisEngine(catalog=SEFAZ_CATALOG).execute(classified.spec, req.previous_data)
+            evento("planner_outcome", details={"planner_decision": "analyze", "operation": classified.spec.operation,
+                                              "reason_code": "consecutive_legacy"})
+            return format_analysis_result(result, catalog=SEFAZ_CATALOG)
     """Traduz a operação identificada por _op em AnalysisSpec e delega o cálculo.
 
     Compatível com a assinatura e com as mensagens antigas de chat_service.

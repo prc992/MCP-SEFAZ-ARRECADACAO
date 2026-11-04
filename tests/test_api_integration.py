@@ -39,9 +39,15 @@ def api(monkeypatch):
          gerar_graficos_icms_fecop=lambda *a: [PlotlyFigure()])
     shim("metadata_service", get_metadata=lambda: {})
     shim("ask_service", gerar_summary=lambda spec: "Resumo de teste")
-    shim("data_availability_service", validar_disponibilidade=lambda spec: {"disponivel": True})
+    shim("data_availability_service", preparar_consulta_temporal=lambda spec: (spec, {"disponivel": True, "aviso": None}),
+         validar_disponibilidade=lambda spec: {"disponivel": True})
     shim("interaction_logger", novo_id=lambda: "id-123", validar_id=lambda x: x if x else None,
-         registrar_interacao=lambda **kwargs: events.append(kwargs), registrar_feedback=lambda **kwargs: True)
+         registrar_interacao=lambda **kwargs: events.append(kwargs), registrar_feedback=lambda **kwargs: True,
+         registrar_etapa=lambda **kwargs: None)
+    from pydantic import BaseModel
+    class MockPdfRequest(BaseModel):
+        pass
+    shim("pdf_report", PdfReportRequest=MockPdfRequest, gerar_pdf_relatorio=lambda req: b"pdf")
 
     spec = importlib.util.spec_from_file_location("_test_etapa1_main", main_path)
     module = importlib.util.module_from_spec(spec)
@@ -70,10 +76,12 @@ def test_playground_sends_existing_chat_contract(api):
     client, _ = api
     res = client.get("/playground")
     assert res.status_code == 200
-    assert 'fetch("/chat"' in res.text
-    assert 'previous_spec:conversaAtual.query_interpretada' in res.text
-    assert 'previous_data:(conversaAtual.dados_brutos || []).slice(0, 101)' in res.text
-    assert 'history:historicoChat.slice(-8)' in res.text
+    # Na arquitetura atual o JS fica em static/, não embutido no HTML.
+    js = (ROOT / "static" / "js" / "playground.js").read_text(encoding="utf-8")
+    assert 'fetch("/chat"' in js
+    assert 'previous_spec:conversaAtual.query_interpretada' in js
+    assert 'previous_data:(conversaAtual.dados_brutos || []).slice(0, 101)' in js
+    assert 'history:historicoChat.slice(-8)' in js
 
 
 def test_chat_deterministic_real_query_spec_no_llm(api, monkeypatch):

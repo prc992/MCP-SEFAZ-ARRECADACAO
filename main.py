@@ -1,23 +1,27 @@
 from fastapi import FastAPI, HTTPException, Header, Request
+from faro_usage_dashboard import router as faro_admin_router
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from schemas import QuerySpec, AskRequest
 from query_engine import executar_query
+from time_series_percentage import PercentageSeriesError
 from chart_engine import gerar_plotly_figure, gerar_graficos_icms_fecop
 from metadata_service import get_metadata
 from ask_service import gerar_summary
 from llm_service import interpretar_pergunta_llm
 from data_availability_service import preparar_consulta_temporal
 from chat_service import ChatRequest, decidir_continuacao
-from interaction_logger import novo_id, validar_id, registrar_interacao, registrar_feedback
+from interaction_logger import novo_id, validar_id, registrar_interacao, registrar_feedback, registrar_visita
 from observability import request_context, medir, last_error_stage
 from pdf_report import PdfReportRequest, gerar_pdf_relatorio
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from suggestion_service import registrar_sugestao
 from typing import Literal
 import time
 
 app = FastAPI()
+app.include_router(faro_admin_router)
 
 # Imagem original do Faro, servida como recurso estatico pelo proprio FastAPI.
 BASE_DIR = Path(__file__).resolve().parent
@@ -86,8 +90,17 @@ def preparar_graficos(dados: list[dict], spec: QuerySpec):
     return fig.to_dict(), None
 
 
+def _aviso_resultado(disponibilidade: dict, query_result: dict) -> str | None:
+    avisos = [disponibilidade.get("aviso"), query_result.get("aviso_percentual")]
+    return " ".join(str(aviso).strip() for aviso in avisos if aviso) or None
+
+
 def resumo_relatorio(spec: QuerySpec):
     if spec.report_type != "icms_fecop":
+        if spec.analysis_type == "time_series" and spec.series_mode == "percentage":
+            return ("Evolução percentual mês a mês em relação ao mês anterior. "
+                    "A arrecadação absoluta também é exibida na tabela; a variação "
+                    "não é calculada quando a referência é zero ou o mês está parcial.")
         return gerar_summary(spec)
     if spec.analysis_type == "compare_periods":
         periodo = f"comparação entre {spec.period_1_label or 'período 1'} e {spec.period_2_label or 'período 2'}"
@@ -126,7 +139,7 @@ def gerar_grafico(spec: QuerySpec):
         "title": f"{spec.metric} por {spec.group_by}",
         "chart_type": spec.chart_type,
         "query_interpretada": spec.model_dump(),
-        "aviso_disponibilidade": disponibilidade.get("aviso"),
+        "aviso_disponibilidade": _aviso_resultado(disponibilidade, query_result),
         "dados_brutos": dados,
         "dados_tabela": preparar_dados_tabela(dados, spec),
         "plotly_json": plotly_json,
@@ -186,6 +199,25 @@ def feedback(req: FeedbackRequest, request: Request):
     return {"ok": True, "vote": req.vote}
 
 
+class SuggestionRequest(BaseModel):
+    session_id: str
+    interaction_id: str
+    text: str = Field(min_length=5, max_length=2000)
+
+
+@app.post("/suggestions", status_code=201)
+def suggestions(req: SuggestionRequest):
+    """Vincula a sugestão ao contexto já registrado; não aceita contexto fornecido pelo cliente."""
+    try:
+        registrado = registrar_sugestao(session_id=req.session_id,
+                                       interaction_id=req.interaction_id, texto=req.text)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if registrado is None:
+        raise HTTPException(status_code=404, detail="Interação não encontrada nesta sessão.")
+    return {"ok": True, **registrado}
+
+
 def _finalizar_interacao(*, resposta, pergunta, sessao, interacao, parent, tipo, inicio, client_ip=None, origem=None):
     resposta["session_id"] = sessao
     resposta["interaction_id"] = interacao
@@ -193,7 +225,7 @@ def _finalizar_interacao(*, resposta, pergunta, sessao, interacao, parent, tipo,
                         parent_interaction_id=parent, tipo=tipo, pergunta=pergunta,
                         resposta=resposta, duracao_ms=(time.perf_counter()-inicio)*1000,
                         origem=origem, client_ip=client_ip,
-                        error_stage=last_error_stage(),
+                        error_stage=last_error_stage() if resposta.get("error") or resposta.get("action") == "error" else None,
                         planner_mode=__import__("os").getenv("ANALYSIS_PLANNER_MODE", "legacy"),
                         model_name=__import__("os").getenv("OPENAI_MODEL", "gpt-4.1-mini"),
                         context_rows=len(resposta.get("dados_brutos") or []),
@@ -241,12 +273,15 @@ def ask(req: AskRequest, request: Request, x_session_id: str | None = Header(def
                 "question": req.question,
                 "query_interpretada": spec.model_dump(),
                 "summary": resumo_relatorio(spec),
-                "aviso_disponibilidade": disponibilidade.get("aviso"),
+                "aviso_disponibilidade": _aviso_resultado(disponibilidade, query_result),
                 "sql": query_result["sql"], "title": f"{spec.metric} por {spec.group_by}",
                 "chart_type": spec.chart_type, "dados_brutos": dados,
                 "dados_tabela": preparar_dados_tabela(dados, spec),
                 "plotly_json": plotly_json, "plotly_charts": plotly_charts
             })
+        except PercentageSeriesError as exc:
+            return finalizar({"question": req.question, "query_interpretada": spec.model_dump(),
+                             "error": str(exc), "error_type": "percentage_series_invalid"})
         except Exception as exc:
             return finalizar({"question": req.question, "query_interpretada": spec.model_dump(),
                              "error": "Falha durante a execução da consulta.",
@@ -295,20 +330,26 @@ def chat(req: ChatRequest, request: Request, x_session_id: str | None = Header(d
             dados = resultado["dados"]
             with medir("chart_render"):
                 plotly_json, plotly_charts = preparar_graficos(dados, spec)
+        except PercentageSeriesError as exc:
+            return finalizar({"action": "error", "error": str(exc),
+                             "error_type": "percentage_series_invalid"})
         except Exception as exc:
             return finalizar({"action": "error", "error":
                      f"Falha ao executar a nova consulta ({type(exc).__name__})."})
         return finalizar({
             "action": "query", "answer": "Atualizei a consulta, a tabela e os gráficos conforme solicitado.",
             "query_interpretada": spec.model_dump(), "summary": resumo_relatorio(spec),
-            "aviso_disponibilidade": disponibilidade.get("aviso"), "sql": resultado["sql"],
+            "aviso_disponibilidade": _aviso_resultado(disponibilidade, resultado), "sql": resultado["sql"],
             "dados_brutos": dados, "dados_tabela": preparar_dados_tabela(dados, spec),
             "plotly_json": plotly_json, "plotly_charts": plotly_charts,
         })
 
 
+@app.get("/faro", response_class=HTMLResponse)
 @app.get("/playground", response_class=HTMLResponse)
-def playground():
+def playground(request: Request):
     """Serve o Playground do Faro sem misturar apresentação e endpoints."""
+    registrar_visita(pagina="faro" if request.url.path == "/faro" else "playground",
+                    client_ip=request.client.host if request.client else None)
     html = (BASE_DIR / "templates" / "playground.html").read_text(encoding="utf-8")
     return HTMLResponse(content=html)

@@ -1,4 +1,6 @@
 from schemas import QuerySpec
+from time_series_percentage import calcular_serie_percentual
+from datetime import date
 from redshift_client import executar_sql
 
 
@@ -32,12 +34,18 @@ def executar_serie_temporal(spec: QuerySpec):
     # para cinco quando o mês atual ainda não possui registros.
     if spec.start_date is not None or spec.end_date is not None:
         if spec.start_date:
-            where_clauses.append(f"a.dat_pagamento >= '{spec.start_date}'")
+            inicio_sql = spec.start_date
+            if spec.series_mode == "percentage":
+                data_inicio = date.fromisoformat(spec.start_date)
+                indice = data_inicio.year * 12 + data_inicio.month - 2
+                inicio_sql = date(indice // 12, indice % 12 + 1, 1).isoformat()
+            where_clauses.append(f"a.dat_pagamento >= '{inicio_sql}'")
         if spec.end_date:
             where_clauses.append(f"a.dat_pagamento <= '{spec.end_date}'")
     elif spec.months_back:
+        lookback = spec.months_back if spec.series_mode == "percentage" else spec.months_back - 1
         where_clauses.append(
-            f"a.dat_pagamento >= DATEADD(month, -{spec.months_back - 1}, DATE_TRUNC('month', CURRENT_DATE))"
+            f"a.dat_pagamento >= DATEADD(month, -{lookback}, DATE_TRUNC('month', CURRENT_DATE))"
         )
 
     if spec.segmento:
@@ -74,13 +82,14 @@ def executar_serie_temporal(spec: QuerySpec):
     for row in dados:
         resultado.append({
             "mes": row["mes"],
-            spec.metric: float(row["valor"]) if row["valor"] is not None else 0
+            spec.metric: (float(row["valor"]) if row["valor"] is not None
+                          else (None if spec.series_mode == "percentage" else 0))
         })
 
-    return {
-    "dados": resultado,
-    "sql": sql
-}
+    if spec.series_mode == "percentage":
+        resultado, aviso = calcular_serie_percentual(resultado, spec)
+        return {"dados": resultado, "sql": sql, "aviso_percentual": aviso}
+    return {"dados": resultado, "sql": sql}
 
 def executar_query(spec: QuerySpec):
     if spec.report_type == "icms_fecop":

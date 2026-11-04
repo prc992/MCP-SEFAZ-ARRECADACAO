@@ -12,6 +12,7 @@ import unicodedata
 from typing import Literal
 
 from .schemas import AnalysisSpec
+from .operations import temporal_key
 from .domain import DomainCatalog, resolve_catalog
 
 
@@ -112,9 +113,111 @@ class _RecoveryIntent:
     category_source: str
 
 
+
+
+_SERIES_OPS = {
+    "maior_queda_consecutiva", "maior_alta_consecutiva",
+    "maior_queda_percentual_consecutiva", "maior_alta_percentual_consecutiva",
+    "variacao_consecutiva", "variacao_entre_periodos",
+}
+_MESES = ("janeiro", "fevereiro", "marco", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro")
+
+
+def _referencias_temporais(question, categories, dimension):
+    n = _norm(question)
+    matches = []
+    for c in categories:
+        if temporal_key(c, dimension) is None:
+            continue
+        if _norm(c) in n:
+            matches.append(c)
+            continue
+        if dimension == "mes":
+            ano, mes = c.split("-")
+            nome = _MESES[int(mes)-1]
+            if re.search(r"\b" + nome + r"\b", n):
+                # Meses de anos diferentes não devem ser escolhidos arbitrariamente.
+                matches.append(c)
+    return list(dict.fromkeys(matches))
+
+
+def _serie_intencao(req, available, categories, catalog):
+    spec = req.previous_spec
+    if spec.group_by not in ("mes", "data_pagamento") or spec.analysis_type == "compare_periods":
+        return None
+    n = _norm(req.question).strip(" ?!.")
+    # Nunca intercepta solicitação explícita de novo agrupamento/recorte.
+    if re.search(r"\b(mostre|gere|refaca|filtre|agrupe|outro grafico|nova consulta)\b", n):
+        return None
+    for phrase in re.findall(r"\bpor\s+([\w ]+)", n):
+        words = phrase.split()
+        for length in (3, 2, 1):
+            dimension = catalog.dimension_from_phrase(" ".join(words[:length]))
+            if dimension is not None:
+                if dimension != spec.group_by:
+                    return None
+                break
+    references = _referencias_temporais(req.question, categories, spec.group_by)
+    pair = len(references) == 2 and bool(re.search(r"\b(?:de|entre|para|ate|com)\b", n))
+    years = set(re.findall(r"(?<!\d)20\d{2}(?!\d)", n))
+    if years and any(ref[:4] not in years for ref in references):
+        return None
+    if pair and re.search(r"\b(vari|cres|cai|queda|alta|diferenca|aument|reduz)\w*", n):
+        operation = "variacao_entre_periodos"
+    elif re.search(r"\b(maior|mais forte|mais acentuad[ao]|maxima|maximo)\b", n) and re.search(r"\b(queda|reducao|caiu|diminui)\w*", n):
+        operation = "maior_queda_percentual_consecutiva" if re.search(r"percentual|porcentagem|em %", n) else "maior_queda_consecutiva"
+    elif re.search(r"\b(maior|mais forte|mais acentuad[ao]|maxima|maximo)\b", n) and re.search(r"\b(alta|crescimento|aumento|subiu)\b", n):
+        operation = "maior_alta_percentual_consecutiva" if re.search(r"percentual|porcentagem|em %", n) else "maior_alta_consecutiva"
+    elif re.search(r"\b(mes a mes|dia a dia|entre meses consecutivos|entre dias consecutivos)\b", n) and re.search(r"variac|variou|evolu|mud|diferenc", n):
+        operation = "variacao_consecutiva"
+    else:
+        return None
+    # Referências explícitas fora do conjunto exibido exigem nova consulta.
+    if not pair and references and operation not in ("variacao_consecutiva",):
+        return None
+    if operation == "variacao_entre_periodos" and len(references) != 2:
+        return None
+    from_ref, to_ref = (None, None)
+    if pair:
+        def ref_position(ref):
+            full = _norm(ref)
+            pos = n.find(full)
+            if pos >= 0:
+                return pos
+            if spec.group_by == "mes":
+                mes = _MESES[int(ref.split("-")[1])-1]
+                m = re.search(r"\b" + mes + r"\b", n)
+                return m.start() if m else len(n)
+            return len(n)
+        references.sort(key=ref_position)
+        from_ref, to_ref = references
+    if len(categories) < 2:
+        # O engine devolve uma explicação de insuficiência, sem cálculo.
+        pass
+    selected = catalog.context_metric(spec.metric, spec.report_type, available)
+    explicit = catalog.mentioned_metrics(req.question, set(catalog.metrics))
+    if explicit:
+        selected = catalog.remap_metric(explicit[0], spec.report_type)
+        if selected not in available:
+            return None
+    if not selected or selected not in available:
+        return None
+    return ValidationDecision("analyze", spec=AnalysisSpec(
+        operation=operation, metric=selected, group_by=spec.group_by,
+        analysis_type=spec.analysis_type, report_type=spec.report_type,
+        from_period=from_ref, to_period=to_ref,
+    ))
+
+
 class AnalysisPlanValidator:
     def __init__(self, catalog: DomainCatalog | None = None):
         self.catalog = resolve_catalog(catalog)
+
+    def classify_consecutive(self, req, available: set[str], categories: list[str]) -> ValidationDecision | None:
+        """Roteamento local seguro de operações cronológicas inequívocas."""
+        if len(req.previous_data) >= 101:
+            return None  # O engine protege contra truncamento, mas não inferir um ranking.
+        return _serie_intencao(req, available, categories, self.catalog)
 
     def recover_unambiguous(self, req, available: set[str], categories: list[str]) -> ValidationDecision | None:
         """Fallback conservador para erros de esquema/escopo da LLM.
@@ -137,6 +240,9 @@ class AnalysisPlanValidator:
                         "question": original, "history": req.history[:-1]
                     })
                     return self.recover_unambiguous(restored, available, categories)
+        consecutive = self.classify_consecutive(req, available, categories)
+        if consecutive is not None:
+            return consecutive
         if _explicit_scope_change(req.question, req.previous_spec, self.catalog):
             return None
         current = [c for c in categories if _mentioned(c, req.question, self.catalog)]
@@ -172,6 +278,14 @@ class AnalysisPlanValidator:
                              available, categories, retry=True)
 
     def validate(self, req, intent, available: set[str], categories: list[str], *, retry: bool = False) -> ValidationDecision:
+        if intent.action == "analyze" and intent.operation in _SERIES_OPS:
+            # As referências temporais são reconstruídas dos dados, nunca aceitas
+            # diretamente da LLM.
+            result = self.classify_consecutive(req, available, categories)
+            if result is not None:
+                return result
+            return ValidationDecision("clarify", reason="unsupported_series_scope",
+                question="Para essa variação, utilize uma série por mês ou dia e indique os períodos desejados.")
         if intent.action == "query":
             if _explicit_scope_change(req.question, req.previous_spec, self.catalog):
                 return ValidationDecision("query")
