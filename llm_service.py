@@ -3,14 +3,13 @@ import os
 import re
 import unicodedata
 from datetime import date
-from functools import lru_cache
-import httpx
 
 from dotenv import load_dotenv
 from schemas import QuerySpec
 from catalog_service import listar_segmentos, listar_subgrupos_receita
 from observability import medir
 from business_metadata import BUSINESS_METADATA
+from llm_client import get_client, model_name
 
 load_dotenv()
 
@@ -222,15 +221,12 @@ REGRAS DE PRESERVAÇÃO DOS FILTROS DE NEGÓCIO:
 """
 
 
-@lru_cache(maxsize=1)
-def _client():
-    from openai import OpenAI
-    return OpenAI(api_key=os.environ["OPENAI_API_KEY"], http_client=httpx.Client(trust_env=False),timeout=25.0, max_retries=1)
+# Alias preservado para compatibilidade com o chat e o planner.
+_client = get_client
 
 
 def interpretar_pergunta_llm(question: str) -> QuerySpec:
-    if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("OPENAI_API_KEY não configurada no ambiente")
+    model_name()  # Valida configuração do deployment antes da consulta.
 
     # Catálogos reais restringem as opções de filtros conhecidas pela LLM.
     with medir("redshift_catalogs"):
@@ -247,9 +243,9 @@ def interpretar_pergunta_llm(question: str) -> QuerySpec:
         "Somente aplique um filtro quando solicitado "
         "pela pergunta e sustentado pelo catálogo."
     )
-    with medir("llm_parse", details={"model": os.getenv("OPENAI_MODEL", "gpt-4.1-mini")}):
+    with medir("llm_parse", details={"model": model_name()}):
         resposta = _client().responses.parse(
-            model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+            model=model_name(),
             input=[
                 {"role": "system", "content": SYSTEM_PROMPT + "\n" + contexto},
                 {"role": "user", "content": question},

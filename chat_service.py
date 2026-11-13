@@ -13,6 +13,7 @@ import unicodedata
 from pydantic import BaseModel, Field
 from schemas import QuerySpec
 from llm_service import _client
+from llm_client import model_name
 from business_metadata import BUSINESS_METADATA
 from analysis.schemas import AnalysisSpec
 from analysis.engine import (AnalysisEngine, _dec, metricas_disponiveis as _metricas_disponiveis)
@@ -317,9 +318,9 @@ def _decidir_com_llm(req: ChatRequest, *, require_query: bool = False,
                           "NÃO calcule valores, percentuais, rankings ou comparações "
                           "numéricas sobre os dados da tabela. Diante de necessidade de "
                           "cálculo, não produza números; solicite esclarecimento.")
-    with medir("llm_chat", details={"model": os.getenv("OPENAI_MODEL", "gpt-4.1-mini")}):
+    with medir("llm_chat", details={"model": model_name()}):
         resposta = _client().responses.parse(
-            model=os.getenv('OPENAI_MODEL', 'gpt-4.1-mini'),
+            model=model_name(),
             input=[
                 {'role': 'system', 'content': system_prompt},
                 {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False, default=str)},

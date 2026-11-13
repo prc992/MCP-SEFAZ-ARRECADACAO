@@ -68,22 +68,24 @@ def test_read_events_filters_dates_and_invalid(tmp_path):
     assert len(a) == 1 and a[0]['interaction_id'] == 'one' and n == 1
 
 
-def test_dashboard_fail_closed_and_auth():
+def test_dashboard_access_controlled_by_network():
+    # A aplicação não implementa HTTP Basic: acesso restrito pela infraestrutura.
     app = FastAPI()
     app.include_router(dashboard.router)
     client = TestClient(app)
-    with patch.dict(os.environ, {'FARO_ADMIN_USER':'gestor','FARO_ADMIN_PASSWORD':'senha-teste'}, clear=False):
-        assert client.get('/faro/admin').status_code == 401
-        assert client.get('/faro/admin', auth=('gestor','incorreta')).status_code == 401
-        r = client.get('/faro/admin', auth=('gestor','senha-teste'))
-        assert r.status_code == 200 and 'Painel de uso' in r.text
-        assert r.headers['cache-control'] == 'no-store'
-        assert client.get('/faro/admin/api/uso?dias=2', auth=('gestor','senha-teste')).status_code == 422
-        with patch.object(dashboard, '_read_events', return_value=([],0)):
-            j = client.get('/faro/admin/api/uso?dias=7', auth=('gestor','senha-teste'))
-        assert j.status_code == 200 and j.json()['resumo']['perguntas'] == 0
-    with patch.dict(os.environ, {'FARO_ADMIN_USER':'','FARO_ADMIN_PASSWORD':''}, clear=False):
-        assert client.get('/faro/admin').status_code == 503
+
+    r = client.get('/faro/admin')
+    assert r.status_code == 200
+    assert 'Painel de uso' in r.text
+    assert r.headers['cache-control'] == 'no-store'
+
+    # As validações funcionais da API permanecem ativas.
+    assert client.get('/faro/admin/api/uso?dias=2').status_code == 422
+    with patch.object(dashboard, '_read_events', return_value=([], 0)):
+        j = client.get('/faro/admin/api/uso?dias=7')
+    assert j.status_code == 200
+    assert j.json()['resumo']['perguntas'] == 0
+    assert j.headers['cache-control'] == 'no-store'
 
 
 def test_page_view_logger_records_no_raw_ip(tmp_path):

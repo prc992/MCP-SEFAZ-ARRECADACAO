@@ -43,7 +43,7 @@ def api(monkeypatch):
          validar_disponibilidade=lambda spec: {"disponivel": True})
     shim("interaction_logger", novo_id=lambda: "id-123", validar_id=lambda x: x if x else None,
          registrar_interacao=lambda **kwargs: events.append(kwargs), registrar_feedback=lambda **kwargs: True,
-         registrar_etapa=lambda **kwargs: None)
+         registrar_etapa=lambda **kwargs: None,registrar_visita=lambda **kwargs: None)
     from pydantic import BaseModel
     class MockPdfRequest(BaseModel):
         pass

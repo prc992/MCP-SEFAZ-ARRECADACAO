@@ -17,6 +17,7 @@ from .domain import DomainCatalog, resolve_catalog
 from .schemas import AnalysisOperation, AnalysisSpec
 from .validator import AnalysisPlanValidator
 from observability import medir, evento
+from llm_client import model_name
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -207,9 +208,9 @@ class AnalysisPlanner:
                     "não confunda nome da DIMENSÃO com uma categoria individual, "
                     "e não use query se os dados atuais já respondem. "
                     "Motivo da rejeição: " + feedback) if attempt == 2 else ""
-                with medir("planner_llm", details={"retry_count": attempt - 1, "model": os.getenv("ANALYSIS_PLANNER_MODEL", os.getenv("OPENAI_MODEL", "gpt-4.1-mini"))}):
+                with medir("planner_llm", details={"retry_count": attempt - 1, "model": model_name(planner=True)}):
                     response = self._client_factory().responses.parse(
-                        model=os.getenv("ANALYSIS_PLANNER_MODEL", os.getenv("OPENAI_MODEL", "gpt-4.1-mini")),
+                        model=model_name(planner=True),
                         input=[
                             {"role": "system", "content": PLANNER_PROMPT + "\n" + self.catalog.planner_context() + retry_rules},
                             {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)},

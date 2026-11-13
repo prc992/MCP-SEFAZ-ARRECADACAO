@@ -40,7 +40,14 @@ class RouteTests(unittest.TestCase):
         cls.old={k:sys.modules.get(k) for k in (
             'schemas','query_engine','chart_engine','metadata_service','ask_service',
             'llm_service','data_availability_service','chat_service','pdf_report','main')}
-        cls.spec=Model(metric='valor_arrecadado',group_by='mes',chart_type='line',analysis_type='time_series',report_type='standard')
+        cls.spec = Model(
+            metric='valor_arrecadado',
+            group_by='mes',
+            chart_type='line',
+            analysis_type='time_series',
+            report_type='standard',
+            series_mode='absolute'
+        )
         fake={
             'schemas':stub('schemas',QuerySpec=Model,AskRequest=Request),
             'query_engine':stub('query_engine',executar_query=lambda spec:{'dados':[{'mes':'2026-10','valor_arrecadado':12.4}], 'sql':'SELECT ...'}),
