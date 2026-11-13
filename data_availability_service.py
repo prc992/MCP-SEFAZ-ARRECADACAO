@@ -103,13 +103,49 @@ def resolver_periodo_serie(spec: QuerySpec) -> tuple[QuerySpec, str | None]:
     return resolvido, aviso + ' A existência de registros não comprova fechamento contábil.'
 
 
+def ajustar_ano_corrente(spec: QuerySpec) -> tuple[QuerySpec, str | None]:
+    """Limita consultas que terminam no ano corrente à última data carregada.
+
+    Preserva períodos históricos e intervalos inteiramente futuros; também
+    contempla séries que começam em anos anteriores e terminam no ano corrente.
+    O mesmo QuerySpec ajustado será usado para validação e SQL.
+    """
+    hoje = date.today()
+    cobertura = cobertura_mensal()
+    datas = [d for d in cobertura.values() if d <= hoje]
+    if not datas:
+        return spec, None
+    ultima = max(datas)
+    alteracoes = {}
+    for inicio_campo, fim_campo in (("start_date", "end_date"),
+                                    ("period_1_start", "period_1_end"),
+                                    ("period_2_start", "period_2_end")):
+        inicio_txt, fim_txt = getattr(spec, inicio_campo), getattr(spec, fim_campo)
+        if not inicio_txt or not fim_txt:
+            continue
+        try:
+            inicio, fim = date.fromisoformat(inicio_txt), date.fromisoformat(fim_txt)
+        except ValueError:
+            continue  # A validação existente informa datas inválidas.
+        if fim.year == hoje.year and inicio <= ultima < fim:
+            alteracoes[fim_campo] = ultima.isoformat()
+    if not alteracoes:
+        return spec, None
+    return (spec.model_copy(update=alteracoes),
+            f"Dados do ano corrente disponíveis até {ultima:%d/%m/%Y}; "
+            "o período solicitado foi limitado a essa data. "
+            "A existência de registros não comprova fechamento contábil.")
+
+
 def preparar_consulta_temporal(spec: QuerySpec) -> tuple[QuerySpec, dict]:
     """Resolve o intervalo e valida o MESMO QuerySpec usado na execução SQL."""
     resolvido, aviso_ajuste = resolver_periodo_serie(spec)
+    resolvido, aviso_ano = ajustar_ano_corrente(resolvido)
     disponibilidade = validar_disponibilidade(resolvido)
-    if aviso_ajuste and disponibilidade['disponivel']:
-        # A mensagem ajustada já descreve a parcialidade do mês corrente.
-        disponibilidade['aviso'] = aviso_ajuste
+    if disponibilidade['disponivel']:
+        avisos = [aviso for aviso in (aviso_ajuste, aviso_ano) if aviso]
+        if avisos:
+            disponibilidade['aviso'] = ' '.join(avisos)
     return resolvido, disponibilidade
 
 

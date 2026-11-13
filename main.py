@@ -250,6 +250,10 @@ def ask(req: AskRequest, request: Request, x_session_id: str | None = Header(def
             return finalizar({"question": req.question,
                 "error": f"Falha na interpretação por LLM ({type(exc).__name__}).",
                 "error_type": "llm_failed"})
+        if getattr(spec, "domain_valid", True) is False:
+            return finalizar({"question": req.question,
+                "error": "Esta pergunta está fora do domínio de arrecadação tributária da SEFAZ-CE.",
+                "error_type": "out_of_domain"})
         try:
             with medir("availability"):
                 spec, disponibilidade = preparar_consulta_temporal(spec)
@@ -315,6 +319,9 @@ def chat(req: ChatRequest, request: Request, x_session_id: str | None = Header(d
                              "query_interpretada": req.previous_spec.model_dump()})
         spec = decisao.query_spec
         origem = "llm_query"
+        if spec is None or getattr(spec, "domain_valid", True) is False:
+            return finalizar({"action": "answer", "answer":
+                "Esta pergunta está fora do domínio de arrecadação tributária da SEFAZ-CE."})
         try:
             with medir("availability"):
                 spec, disponibilidade = preparar_consulta_temporal(spec)

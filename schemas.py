@@ -3,6 +3,8 @@ from typing import Literal
 
 
 class QuerySpec(BaseModel):
+    # A LLM deve rejeitar solicitações fora do domínio antes de qualquer SQL.
+    domain_valid: bool = True
     metric: Literal["valor_arrecadado", "qtd_documentos"]
     group_by: Literal[
         "total",

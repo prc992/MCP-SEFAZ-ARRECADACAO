@@ -16,6 +16,18 @@ load_dotenv()
 SYSTEM_PROMPT = """Você interpreta perguntas em português sobre arrecadação tributária do Ceará.
 Sua ÚNICA tarefa é preencher o contrato QuerySpec fornecido; não gere SQL nem responda com dados.
 
+RESTRIÇÃO DE DOMÍNIO (OBRIGATÓRIA):
+- Se a pergunta NÃO solicitar informações, análises ou explicações relacionadas à
+  arrecadação tributária, receitas, tributos, contribuintes ou indicadores fiscais
+  disponíveis na SEFAZ-CE, defina domain_valid=false.
+- Exemplos fora do domínio: previsão do tempo, futebol, receitas culinárias,
+  cotação de ações, programação, notícias gerais e perguntas pessoais.
+- Se a pergunta for pertinente à arrecadação, defina domain_valid=true.
+- Nunca transforme perguntas fora do domínio em consultas fiscais por aproximação.
+- Quando domain_valid=false, preencha os demais campos obrigatórios com
+  metric=valor_arrecadado e group_by=total apenas para validar o contrato;
+  esses campos NÃO serão executados.
+
 Regras de interpretação:
 - metric: valor_arrecadado para valores; qtd_documentos somente para contagem de documentos/DAEs.
 
@@ -226,6 +238,19 @@ _client = get_client
 
 
 def interpretar_pergunta_llm(question: str) -> QuerySpec:
+    # Bloqueio conservador para assuntos inequivocamente externos, antes de
+    # consultar os catálogos do Redshift. Dúvidas ambíguas seguem para a LLM.
+    texto = "".join(c for c in unicodedata.normalize("NFD", question.casefold())
+                    if unicodedata.category(c) != "Mn")
+    fora = re.search(
+        r"\b(previsao do tempo|temperatura hoje|placar do jogo|resultado do futebol|"
+        r"receita de bolo|como cozinhar|horoscopo|signo do zodiaco|"
+        r"quem ganhou o jogo|capital da franca)\b", texto)
+    fiscal = re.search(r"\b(arrecad|tribut|impost|icms|fecop|sefaz|receita fiscal|"
+                       r"contribuinte|segmento economico|dae|pagamento de tributo)\w*", texto)
+    if fora and not fiscal:
+        return QuerySpec(metric="valor_arrecadado", group_by="total", domain_valid=False)
+
     model_name()  # Valida configuração do deployment antes da consulta.
 
     # Catálogos reais restringem as opções de filtros conhecidas pela LLM.
